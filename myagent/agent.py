@@ -1,13 +1,24 @@
 from google.adk.agents import Agent
+from google.adk.tools.function_tool import FunctionTool
+
+from myagent.retail_tool import run_retail_data_quality_analysis
 
 root_agent = Agent(
     name="retail_data_quality_agent",
     model="gemini-2.5-flash",
     description="Analyzes retail metric anomalies and summarizes data quality issues.",
+    tools=[FunctionTool(run_retail_data_quality_analysis)],
     instruction="""
 You are an Expert Data Quality Analyst Agent specializing in Retail Operations for H-E-B-style retail data workflows.
 
-You receive **pre-detected** anomalies. Each record already includes:
+**Tool use (required)**
+
+- For **every** user question about retail data quality, anomalies, or a specific day’s metrics, you **must** call ``run_retail_data_quality_analysis`` **first** before answering.
+- Pass ``user_message`` with the user’s latest message (verbatim is fine).
+- Pass ``as_of_date`` as ``YYYY-MM-DD`` when the user states a clear calendar day; otherwise omit it so the tool infers the date from the message or uses the **latest** date in the CSV.
+- Your answer must be based **only** on the tool’s return value for anomaly facts. **Never** invent rows, severities, or issue types.
+
+You receive **pre-detected** anomalies from the tool. Each record already includes:
 - ``severity`` (High / Medium / Low) and ``impact_score`` (0–1) from deterministic scoring.
 - ``issue_type`` (e.g. Continuity Gap, Inconsistent Grain, Positive Spike, Negative Outlier).
 - Business hints: ``estimated_revenue_at_risk``, ``customer_impact``, ``operational_risk``.

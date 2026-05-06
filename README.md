@@ -1,44 +1,62 @@
 # Retail Data Quality Agent
 
-A hybrid retail anomaly detection system that combines deterministic Python checks with a Google ADK + Gemini agent to generate executive-ready data quality summaries.
+A retail data quality agent that detects anomalies in daily store metrics and summarizes them through both a CLI and a browser-based ADK chat interface. It runs **deterministic Python checks** (pandas) for continuity gaps, positive spikes, negative outliers, and inconsistent grain, then scores and groups results. A **Google ADK + Gemini** model turns that structured output into short summaries.
 
-Built to detect continuity gaps, spikes, negative outliers, and inconsistent grain in daily aggregated store metrics.
+You can use the project in two ways:
+
+- **CLI** — `run_day.py` for a given date (prints a summary to the terminal).
+- **Browser** — `adk web .` opens the ADK chat UI; the agent calls the **same live pipeline** as the CLI via an ADK tool (not a hardcoded sample payload).
+
+## Problem statement
+
+Daily metrics (store, department, metric code) need monitoring: missing system indicators, impossible negatives on volume-style metrics, suspicious spikes, and **grain** issues (expected store / department / metric combinations missing on a day when history suggests they should appear). Raw rule hits are noisy; **severity** should come from code (`impact_score`, High/Medium/Low), not from the model guessing.
+
+The stack is: **detect → enrich → optional top‑N for the LLM → format for the model → Gemini explains** using only the supplied facts.
+
+## Prerequisites
+
+- **Python** 3.11+ (tested on 3.13).
+- **Dependencies**: `pip install -r requirements.txt` (`google-adk`, `google-genai`, `pandas`, `python-dotenv`, …).
+- **Gemini credentials** (e.g. `.env`) for any path that calls the model: `run_day.py`, `adk web`, and `evaluate.py --with-llm`. **`evaluate.py` alone** does not call the LLM by default.
 
 ## Quick start
+
+Create a virtual environment and install dependencies.
+
+**Windows (PowerShell or cmd)**
 
 ```bash
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
+```
+
+**macOS / Linux**
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Then:
+
+```bash
 python evaluate.py
 python run_day.py --date 2024-05-20 --grain-min-avg 100 --top-n 5
 ```
 
-On macOS or Linux, activate the venv with `source .venv/bin/activate`. Configure Gemini credentials (for example `.env`) before `run_day.py` if you want the LLM summary; `evaluate.py` alone does not require an API call.
+- `evaluate.py` — deterministic scenario checks only (no Gemini unless you pass `--with-llm`).
+- `run_day.py` — runs the full pipeline and prints a summary; **requires** Gemini (or equivalent) configuration.
 
 ## Results
 
-- Deterministic detector evaluation: **13/13** scenario checks passed.
-- End-to-end runs generate:
-  - raw anomaly exports in JSON and CSV
-  - grouped store/department summaries
-  - severity-aware Gemini narratives with operational and revenue-risk context
-
-## Problem statement
-
-Daily retail metrics (by store, department, and metric code) need consistent monitoring: missing system indicators, impossible negative volumes, suspicious spikes, and incomplete “grain” (expected store / department / metric combinations that disappear on a given day). Raw rule hits are too noisy for executives, and severity should not be invented by a language model alone.
-
-This project combines:
-
-- **Deterministic detection** in Python (pandas) over CSV extracts.
-- **Scoring and business hints** (`impact_score`, High/Medium/Low `severity`, revenue-at-risk and operational-risk fields).
-- **A Google ADK + Gemini agent** that explains and groups issues using only the structured facts you pass in—not ad‑hoc severity.
-
-The goal is decision-ready summaries: fewer false alarms, explicit severity, and narratives aligned with store and department ownership.
+- Deterministic evaluation: **13/13** scenario checks passed (`python evaluate.py`).
+- **CLI and ADK web chat share the same backend**: `myagent/pipeline.py` (`run_detection_pipeline`). For the same date and settings, both consume the same detector and enrichment output; the written summary may differ slightly per model run, but it is grounded in the same anomaly list and severities.
 
 ## Architecture
 
-Data and control flow:
+Shared **detection pipeline** (CSV → window → rules → `enrich_anomalies` → save raw exports → `format_anomalies_for_llm`):
 
 ```text
                     ┌─────────────────────┐
@@ -49,7 +67,7 @@ Data and control flow:
                                ▼
                     ┌─────────────────────┐
                     │ History window      │
-                    │ (e.g. 30d to --date)│
+                    │ (e.g. 30d to as-of) │
                     └──────────┬──────────┘
                                │
          ┌─────────────────────┼─────────────────────┐
@@ -68,72 +86,89 @@ Data and control flow:
                                │
               ┌────────────────┼────────────────┐
               ▼                ▼                ▼
-     output/raw_*.json   optional --top-n   format_anomalies_for_llm()
-     output/raw_*.csv     (LLM subset only)  (grouped by store/dept)
+     output/raw_*.json   optional top-N     format_anomalies_for_llm()
+     output/raw_*.csv     (LLM subset)       (grouped by store/dept)
                                │
-                               ▼
-                    ┌─────────────────────┐
-                    │ ADK InMemoryRunner  │
-                    │ root_agent (Gemini) │
-                    └──────────┬──────────┘
-                               ▼
-                    Summary + Anomalies Found
-                    (stdout / demo)
+         ┌─────────────────────┴─────────────────────┐
+         ▼                                           ▼
+  run_day.py → InMemoryRunner                  adk web → root_agent
+  (CLI, prints summary)                        calls tool → same pipeline
+                                               then Gemini summarizes
 ```
 
-Conceptually: **detectors → enrichment → persistence → prompt shaping → LLM**. The agent does not replace rules; it interprets and groups what the pipeline already labeled.
+**Entry points**
 
-## Prerequisites
+| Path | What it does |
+|------|----------------|
+| **`run_day.py`** | Thin CLI: calls `run_detection_pipeline` in `myagent/pipeline.py`, then runs the root agent on the formatted prompt (stdout). |
+| **`adk web .`** | Web UI: user chats with `root_agent` in `myagent/agent.py`. The agent invokes **`run_retail_data_quality_analysis`** (`myagent/retail_tool.py`), which calls the **same** `run_detection_pipeline`. |
 
-- Python 3.11+ (project tested with 3.13).
-- Virtual environment with dependencies from `requirements.txt` (`google-adk`, `google-genai`, `pandas`, `python-dotenv`, …).
-- API credentials for Gemini (for example via `.env` and your usual Google GenAI / Vertex setup—match what you already use for `adk web`).
+There is **no** separate fake anomaly payload for the web: both paths execute the real detectors and enrichment on your CSV.
 
 ## How to run `evaluate.py`
 
-Deterministic checks on labeled micro-scenarios (no LLM by default):
+Labeled micro-scenarios for detectors + enrichment (default: **no** LLM):
 
 ```bash
 python evaluate.py
 ```
 
-You should see a line such as `Detector expectations: 13/13` plus a check that optional grain `min_avg_value` filtering behaves as expected.
+Expect: `Detector expectations: 13/13` and a check that optional grain `min_avg_value` filtering behaves as expected.
 
-Optional: also run the agent once per scenario and score simple keyword overlap (slower; needs credentials):
+Optional LLM keyword smoke test (slower, needs credentials):
 
 ```bash
 python evaluate.py --with-llm
 ```
 
-## How to run `run_day.py`
+## How to run `run_day.py` (CLI)
 
-Analyze a calendar day against the default simulator CSV, write raw anomaly artifacts, then print the Gemini summary:
+Analyze one calendar day against the metrics CSV, write raw artifacts under `output/`, and print a Gemini summary:
 
 ```bash
 python run_day.py --date 2024-05-20
 ```
 
-Useful flags:
-
 | Flag | Purpose |
 |------|---------|
 | `--csv PATH` | Alternate metrics file |
-| `--history-days N` | Lookback window length ending on `--date` (default 30) |
+| `--history-days N` | Lookback ending on `--date` (default 30) |
 | `--z-threshold` | Positive spike z-score threshold (default 4.0) |
-| `--grain-min-distinct-days` | Minimum distinct lookback days for inconsistent grain (default 3) |
-| `--grain-min-avg` | Optional minimum mean `metricvalue` in lookback to flag grain |
-| `--top-n` | Per store/dept, only the top N anomalies by `impact_score` are sent to the LLM (full list still saved under `output/`) |
+| `--grain-min-distinct-days` | Min distinct lookback days for inconsistent grain (default 3) |
+| `--grain-min-avg` | Optional min mean `metricvalue` in lookback for grain |
+| `--top-n` | Per store/dept, cap anomalies **sent to the LLM** by `impact_score` (full enriched list still saved) |
 
 Artifacts:
 
 - `output/raw_anomalies_<YYYY-MM-DD>.json`
 - `output/raw_anomalies_<YYYY-MM-DD>.csv`
 
+## Web UI (ADK Chat)
+
+From the **project root** (the folder that **contains** the `myagent` directory), run:
+
+```bash
+adk web .
+```
+
+1. Open the URL shown in the terminal (default `http://127.0.0.1:8000`).
+2. Select the **`myagent`** app.
+3. Ask something concrete, for example:  
+   **“Analyze retail data quality issues for 2024-05-20 and summarize the most severe anomalies by store and department.”**
+
+The chat agent **must** call the **`run_retail_data_quality_analysis`** tool. That runs **`run_detection_pipeline`** — the same code path as **`run_day.py`** (detectors, `enrich_anomalies`, `format_anomalies_for_llm`, raw exports). It is **not** a hardcoded sample list.
+
+- If the user gives a **`YYYY-MM-DD`** in the message (or the model passes it as `as_of_date`), that day is used; otherwise the tool falls back to the **latest** `metricdate` in the CSV.
+- Each analysis that hits the tool can **refresh** `output/raw_anomalies_<date>.json` and `.csv` for that resolved as-of date.
+
+Optional environment variables (web tool / pipeline defaults):  
+`RETAIL_METRICS_CSV`, `RETAIL_HISTORY_DAYS`, `RETAIL_Z_THRESHOLD`, `RETAIL_GRAIN_MIN_DISTINCT`, `RETAIL_GRAIN_MIN_AVG`, `RETAIL_TOP_N`.
+
 ## Example output snippets (2024-05-20)
 
 ### Raw detector + enrichment (CSV)
 
-First rows of `output/raw_anomalies_2024-05-20.csv` (columns truncated in prose; see file for full width):
+First rows of `output/raw_anomalies_2024-05-20.csv` (ellipsis in the header row; open the file for all columns):
 
 ```text
 storeid,deptname,metriccode,metricvalue,date_or_range,issue_type,...,impact_score,severity,estimated_revenue_at_risk,customer_impact,operational_risk,...
@@ -144,7 +179,7 @@ storeid,deptname,metriccode,metricvalue,date_or_range,issue_type,...,impact_scor
 
 ### LLM summary (stdout)
 
-Example excerpt from `python run_day.py --date 2024-05-20 --grain-min-avg 100 --top-n 5` (wording varies slightly per model run):
+Excerpt from `python run_day.py --date 2024-05-20 --grain-min-avg 100 --top-n 5` (wording varies by run):
 
 ```text
 Summary:
@@ -159,14 +194,16 @@ Anomalies Found:
 *   ...
 ```
 
-## Project layout (high level)
+## Project layout
 
 | Path | Role |
 |------|------|
-| `myagent/agent.py` | ADK `root_agent` instruction |
-| `myagent/anomaly_detector.py` | Load CSV, detection functions |
-| `myagent/anomaly_impact.py` | `enrich_anomalies` (severity, scores, business hints) |
-| `myagent/anomaly_to_prompt.py` | Grouped prompt text for the LLM |
-| `run_day.py` | CLI entry |
-| `evaluate.py` | Scenario-based evaluation |
-| `data/` | Sample retail metrics CSV |
+| `myagent/pipeline.py` | **`run_detection_pipeline`** — shared CSV window, detectors, enrichment, saves `output/raw_*`, formats prompt text. Used by CLI and web tool. |
+| `myagent/retail_tool.py` | ADK tool **`run_retail_data_quality_analysis`**; calls the pipeline for **`adk web`**. |
+| `myagent/agent.py` | **`root_agent`** definition, tool registration, instructions for summarizing tool output. |
+| `run_day.py` | **CLI entry** — thin wrapper: pipeline + `InMemoryRunner` + stdout summary. |
+| `evaluate.py` | **Eval entry** — scenario-based checks on detectors + enrichment (optional `--with-llm`). |
+| `myagent/anomaly_detector.py` | **Detection** — `load_metrics`, `find_*` rule functions. |
+| `myagent/anomaly_impact.py` | **Enrichment** — `enrich_anomalies` (severity, impact score, business hints). |
+| `myagent/anomaly_to_prompt.py` | **Prompt shaping** — `format_anomalies_for_llm` (store/dept grouping for the model). |
+| `data/` | Sample retail metrics CSV (`retail_data_quality_sim.csv`). |
