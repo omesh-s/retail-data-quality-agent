@@ -10,10 +10,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 from google.adk.runners import InMemoryRunner
 
+from config.settings import get_settings
 from myagent import root_agent
 from myagent.pipeline import DEFAULT_CSV, OUTPUT_DIR, run_detection_pipeline
-
-DEFAULT_HISTORY_DAYS = 30
 
 
 def _final_text_from_events(events: list) -> str:
@@ -48,6 +47,10 @@ async def _run_agent(prompt: str) -> str:
 
 def main() -> None:
     load_dotenv()
+    get_settings.cache_clear()
+    s = get_settings()
+
+    default_csv = s.retail_metrics_csv or DEFAULT_CSV
 
     parser = argparse.ArgumentParser(
         description="Detect retail metric anomalies for a date and summarize with Gemini."
@@ -60,37 +63,37 @@ def main() -> None:
     parser.add_argument(
         "--csv",
         type=Path,
-        default=DEFAULT_CSV,
-        help=f"Path to metrics CSV (default: {DEFAULT_CSV})",
+        default=default_csv,
+        help=f"Path to metrics CSV (default: from RETAIL_METRICS_CSV or {DEFAULT_CSV})",
     )
     parser.add_argument(
         "--history-days",
         type=int,
-        default=DEFAULT_HISTORY_DAYS,
-        help="Days of history ending on --date (default: 30)",
+        default=s.retail_history_days,
+        help="Days of history ending on --date",
     )
     parser.add_argument(
         "--z-threshold",
         type=float,
-        default=4.0,
+        default=s.retail_z_threshold,
         help="Z-score threshold for positive spikes",
     )
     parser.add_argument(
         "--grain-min-distinct-days",
         type=int,
-        default=3,
-        help="Inconsistent grain: min distinct lookback days for a combo (default: 3)",
+        default=s.retail_grain_min_distinct,
+        help="Inconsistent grain: min distinct lookback days for a combo",
     )
     parser.add_argument(
         "--grain-min-avg",
         type=float,
-        default=None,
+        default=s.retail_grain_min_avg,
         help="Inconsistent grain: min mean metricvalue in lookback (optional)",
     )
     parser.add_argument(
         "--top-n",
         type=int,
-        default=None,
+        default=s.retail_top_n,
         help="Per store/dept, only send top N anomalies to the LLM (by impact_score)",
     )
     args = parser.parse_args()

@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
 from dotenv import load_dotenv
 
+from config.settings import get_settings
 from myagent.pipeline import DEFAULT_CSV, run_detection_pipeline
 
 
@@ -34,47 +32,22 @@ def run_retail_data_quality_analysis(
         Full formatted user prompt (date line + structured anomaly sections) to ground
         the model reply.
 
-    Environment (optional):
-        ``RETAIL_METRICS_CSV``: path to CSV (default: project ``data/retail_data_quality_sim.csv``).
-        ``RETAIL_HISTORY_DAYS``, ``RETAIL_Z_THRESHOLD``, ``RETAIL_GRAIN_MIN_DISTINCT``,
-        ``RETAIL_GRAIN_MIN_AVG``, ``RETAIL_TOP_N``: override pipeline defaults for the web UI.
+    Configuration:
+        See ``config/settings.py`` / ``.env.example`` (``RETAIL_*`` variables).
     """
     load_dotenv()
-
-    csv_raw = os.environ.get("RETAIL_METRICS_CSV", "").strip()
-    csv_path = Path(csv_raw) if csv_raw else DEFAULT_CSV
-
-    def _int_env(name: str, default: int) -> int:
-        v = os.environ.get(name, "").strip()
-        return int(v) if v else default
-
-    def _float_env(name: str, default: float) -> float:
-        v = os.environ.get(name, "").strip()
-        return float(v) if v else default
-
-    def _opt_float(name: str) -> float | None:
-        v = os.environ.get(name, "").strip()
-        return float(v) if v else None
-
-    def _opt_int(name: str) -> int | None:
-        v = os.environ.get(name, "").strip()
-        return int(v) if v else None
-
-    history_days = _int_env("RETAIL_HISTORY_DAYS", 30)
-    z_threshold = _float_env("RETAIL_Z_THRESHOLD", 4.0)
-    grain_distinct = _int_env("RETAIL_GRAIN_MIN_DISTINCT", 3)
-    grain_min_avg = _opt_float("RETAIL_GRAIN_MIN_AVG")
-    top_n = _opt_int("RETAIL_TOP_N")
+    s = get_settings()
+    csv_path = s.retail_metrics_csv or DEFAULT_CSV
 
     result = run_detection_pipeline(
         csv_path,
         as_of_date=as_of_date if as_of_date and str(as_of_date).strip() else None,
         user_message=user_message or "",
-        history_days=history_days,
-        z_threshold=z_threshold,
-        grain_min_distinct_days=grain_distinct,
-        grain_min_avg=grain_min_avg,
-        top_n=top_n,
+        history_days=s.retail_history_days,
+        z_threshold=s.retail_z_threshold,
+        grain_min_distinct_days=s.retail_grain_min_distinct,
+        grain_min_avg=s.retail_grain_min_avg,
+        top_n=s.retail_top_n,
         save_exports=True,
     )
     return result.formatted_prompt

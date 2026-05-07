@@ -1,0 +1,15 @@
+# One-line JSON records per log event (load via LOG_CONFIG_FILE).
+# Uses app.logging_setup.JsonLogFormatter.
+version: 1
+disable_existing_loggers: false
+formatters:
+  json:
+    (): app.logging_setup.JsonLogFormatter
+handlers:
+  stderr:
+    class: logging.StreamHandler
+    formatter: json
+    stream: ext://sys.stderr
+root:
+  level: INFO
+  handlers: [stderr]

@@ -3,3 +3,7 @@ litellm
 python-dotenv
 google-genai
 pandas
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic-settings>=2.0.0
+pyyaml>=6.0.1
