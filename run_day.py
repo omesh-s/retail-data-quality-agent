@@ -1,4 +1,4 @@
-"""CLI: run deterministic anomaly detection for a day and summarize with the ADK agent."""
+# CLI: run detection for a day and summarize with the ADK/Gemini agent.
 
 from __future__ import annotations
 
@@ -15,8 +15,8 @@ from myagent import root_agent
 from myagent.pipeline import DEFAULT_CSV, OUTPUT_DIR, run_detection_pipeline
 
 
+# Collect human-readable model text from ADK events for one turn.
 def _final_text_from_events(events: list) -> str:
-    """Collect human-readable model text from ADK events for one turn."""
     parts: list[str] = []
     for ev in events:
         if ev.author == "user":
@@ -32,6 +32,7 @@ def _final_text_from_events(events: list) -> str:
     return "\n".join(parts).strip()
 
 
+# Send prompt to the ADK agent and return the final model text.
 async def _run_agent(prompt: str) -> str:
     runner = InMemoryRunner(agent=root_agent, app_name="retail_data_quality_cli")
     session_id = f"run_day_{uuid.uuid4().hex}"
@@ -45,6 +46,7 @@ async def _run_agent(prompt: str) -> str:
     return _final_text_from_events(events)
 
 
+# Parse CLI args, run the detection pipeline, print the Gemini summary.
 def main() -> None:
     load_dotenv()
     get_settings.cache_clear()
@@ -115,5 +117,6 @@ def main() -> None:
     print(summary)
 
 
+# Allow: python run_day.py --date ...
 if __name__ == "__main__":
     main()

@@ -1,4 +1,4 @@
-"""Central settings loaded from environment variables and optional ``.env`` file."""
+# Central settings from environment variables and optional .env file.
 
 from __future__ import annotations
 
@@ -10,9 +10,8 @@ from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+# Service host/port, logging, and retail pipeline defaults (no secrets).
 class Settings(BaseSettings):
-    """Service and retail pipeline defaults. No secrets belong here."""
-
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -80,12 +79,13 @@ class Settings(BaseSettings):
     )
     @classmethod
     def empty_str_to_none(cls, v: object) -> object:
+        # Treat blank env strings as unset for optional path/numeric fields.
         if v is None or v == "":
             return None
         return v
 
 
+# Cached Settings instance; use get_settings.cache_clear() in tests if env changes.
 @lru_cache
 def get_settings() -> Settings:
-    """Cached settings singleton (call ``get_settings.cache_clear()`` in tests if needed)."""
     return Settings()

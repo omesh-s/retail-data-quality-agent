@@ -1,4 +1,4 @@
-"""Application logging: console, optional JSON, or YAML dictConfig."""
+# Application logging: console, optional JSON, or YAML dictConfig.
 
 from __future__ import annotations
 
@@ -14,10 +14,10 @@ import yaml
 from config.settings import get_settings
 
 
+# logging.Formatter that emits one JSON object per log line.
 class JsonLogFormatter(logging.Formatter):
-    """Minimal JSON lines for machine-readable logs."""
-
     def format(self, record: logging.LogRecord) -> str:
+        # Serialize record as one JSON object per line.
         payload: dict[str, Any] = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "level": record.levelname,
@@ -29,8 +29,8 @@ class JsonLogFormatter(logging.Formatter):
         return json.dumps(payload, default=str)
 
 
+# Configure root logger from settings (dictConfig file if set, else stream + level).
 def configure_logging() -> None:
-    """Idempotent setup from settings: YAML file wins, else console vs json."""
     settings = get_settings()
     if settings.log_config_file and settings.log_config_file.is_file():
         with settings.log_config_file.open(encoding="utf-8") as f:

@@ -1,4 +1,4 @@
-"""Application configuration (environment-driven)."""
+# Application configuration (environment-driven).
 
 from config.settings import Settings, get_settings
 

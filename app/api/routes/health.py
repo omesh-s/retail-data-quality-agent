@@ -1,4 +1,4 @@
-"""Health check route."""
+# Health check route.
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+# Liveness probe for orchestrators and local sanity checks.
 @router.get("/health", response_model=HealthResponse, tags=["health"])
 def health() -> HealthResponse:
-    """Liveness probe for orchestrators and local sanity checks."""
     logger.debug("health check")
     return HealthResponse()

@@ -1,8 +1,11 @@
+# ADK root agent: Gemini + tool that runs the live retail detection pipeline.
+
 from google.adk.agents import Agent
 from google.adk.tools.function_tool import FunctionTool
 
 from myagent.retail_tool import run_retail_data_quality_analysis
 
+# Default agent used by ``adk web``, ``run_day.py``, and optional LLM eval.
 root_agent = Agent(
     name="retail_data_quality_agent",
     model="gemini-2.5-flash",

@@ -1,13 +1,6 @@
-"""FastAPI entrypoint: health and future operational endpoints.
-
-Run from project root::
-
-    uvicorn app.main:app --reload --host 127.0.0.1 --port 8080
-
-This does **not** replace ``adk web .``; the ADK chat UI remains the primary
-browser experience for the Gemini agent. This app complements it with a small
-HTTP surface for probes and future automation.
-"""
+# FastAPI entrypoint: health and future operational endpoints.
+# Run: uvicorn app.main:app --reload --host 127.0.0.1 --port 8080
+# Complements adk web (chat); small HTTP surface for probes and automation.
 
 from __future__ import annotations
 
@@ -23,11 +16,13 @@ from app.logging_setup import configure_logging
 from app.schemas.responses import ErrorResponse
 from config.settings import get_settings
 
+# Load .env then stdout/file logging per settings.
 load_dotenv()
 configure_logging()
 
 logger = logging.getLogger(__name__)
 
+# FastAPI app instance (routers mounted below).
 app = FastAPI(
     title="Retail Data Quality API",
     description="Companion HTTP service for the retail anomaly detection pipeline.",
@@ -35,6 +30,7 @@ app = FastAPI(
 )
 
 
+# Return 422 with ErrorResponse JSON when request body/query fails validation.
 @app.exception_handler(RequestValidationError)
 async def validation_handler(
     request: Request, exc: RequestValidationError
@@ -51,6 +47,7 @@ async def validation_handler(
 app.include_router(health_routes.router)
 
 
+# One-time log line when the process starts.
 @app.on_event("startup")
 async def startup() -> None:
     logger.info(
@@ -58,6 +55,7 @@ async def startup() -> None:
     )
 
 
+# Dev entry: run uvicorn with host/port from settings.
 if __name__ == "__main__":
     import uvicorn
 

@@ -1,4 +1,4 @@
-"""Severity, impact scores, and business-impact hints for anomaly records."""
+# Severity, impact scores, and business-impact hints for anomaly records.
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ _MEDIUM_THRESHOLD = 0.34
 _LARGE_STORE_REVENUE = 5000.0
 
 
+# Map 0–1 impact_score to High / Medium / Low.
 def severity_from_impact_score(score: float) -> str:
-    """Map a 0–1 impact score to High / Medium / Low."""
     if score >= _HIGH_THRESHOLD:
         return "High"
     if score >= _MEDIUM_THRESHOLD:
@@ -25,6 +25,7 @@ def severity_from_impact_score(score: float) -> str:
     return "Low"
 
 
+# Per-store max daily REVENUEUSD in df (used to weight "large store" impact).
 def _store_max_revenue_usd(df: pd.DataFrame) -> dict[Any, float]:
     if df.empty or COL_VALUE not in df.columns:
         return {}
@@ -37,6 +38,7 @@ def _store_max_revenue_usd(df: pd.DataFrame) -> dict[Any, float]:
     return rev.groupby(COL_STORE, sort=False)[COL_VALUE].max().to_dict()
 
 
+# Parse streak length from continuity details text; default 7 if missing.
 def _continuity_streak_days(details: str) -> int:
     m = re.search(r"(\d+)\s+consecutive", details)
     if m:
@@ -50,19 +52,7 @@ def enrich_anomalies(
     *,
     as_of: pd.Timestamp | None = None,
 ) -> list[dict]:
-    """Add ``impact_score``, ``severity``, and business-impact fields to each record.
-
-    ``severity`` is derived only from ``impact_score`` so the model explains rather
-    than invents severity tiers.
-
-    Args:
-        df: History window used for detection (for store-level revenue context).
-        anomalies: Raw detector output dicts (mutated copies returned).
-        as_of: Optional as-of day (reserved for future recency weighting).
-
-    Returns:
-        New list of dicts with enrichment fields added.
-    """
+    # Copy each raw anomaly; add impact_score, severity, revenue/customer/ops hints using df context.
     _ = as_of  # reserved for recency weighting
     store_rev_max = _store_max_revenue_usd(df)
     out: list[dict] = []

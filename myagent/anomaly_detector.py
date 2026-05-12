@@ -1,4 +1,4 @@
-"""Deterministic retail metric anomaly detection using pandas."""
+# Deterministic retail metric anomaly detection using pandas.
 
 from __future__ import annotations
 
@@ -19,17 +19,13 @@ _POSITIVE_ONLY_NORM = frozenset({"UNITSSOLD", "CUSTCOUNT", "REVENUEUSD"})
 _SYSTEM_METRIC_NORM = frozenset({"SYSTEMON", "SYSTEMOFF"})
 
 
+# Uppercase metric code, underscores stripped, for rule matching.
 def _norm_metric_code(value: Any) -> str:
-    """Uppercase metric code with underscores removed for rule matching."""
     return str(value).replace("_", "").strip().upper()
 
 
+# Load CSV; rename columns to canonical names; parse dates and numeric metricvalue.
 def load_metrics(csv_path: str) -> pd.DataFrame:
-    """Load retail metrics CSV and normalize to canonical column names.
-
-    Accepts simulator headers (Dept_name, metric_code, ...) or already-canonical
-    names (Deptname, metriccode, ...).
-    """
     df = pd.read_csv(csv_path)
     rename_map: dict[str, str] = {}
     lower_to_actual = {c.lower(): c for c in df.columns}
@@ -55,16 +51,18 @@ def load_metrics(csv_path: str) -> pd.DataFrame:
     return df
 
 
+# True if this metric must never be negative (units, customers, revenue).
 def _is_positive_only_metric(metriccode: Any) -> bool:
     return _norm_metric_code(metriccode) in _POSITIVE_ONLY_NORM
 
 
+# True if the code is SYSTEM_ON or SYSTEM_OFF (continuity rules).
 def _is_system_metric(metriccode: Any) -> bool:
     return _norm_metric_code(metriccode) in _SYSTEM_METRIC_NORM
 
 
+# Rows where metricvalue < 0 for positive-only metrics (units, customers, revenue).
 def find_negative_outliers(df: pd.DataFrame) -> list[dict]:
-    """Flag negative numeric values for metrics that must be non-negative."""
     need = {COL_STORE, COL_DEPT, COL_METRIC, COL_DATE, COL_VALUE}
     missing = need - set(df.columns)
     if missing:
@@ -91,8 +89,8 @@ def find_negative_outliers(df: pd.DataFrame) -> list[dict]:
     return out
 
 
+# Per (store, dept, metric) z-score or mean+5*std spike vs window.
 def find_positive_spikes(df: pd.DataFrame, z_threshold: float = 4.0) -> list[dict]:
-    """Detect values far above group mean for (Storeid, Deptname, metriccode)."""
     need = {COL_STORE, COL_DEPT, COL_METRIC, COL_DATE, COL_VALUE}
     if need - set(df.columns):
         return []
@@ -131,12 +129,8 @@ def find_positive_spikes(df: pd.DataFrame, z_threshold: float = 4.0) -> list[dic
     return out
 
 
+# Streaks of >=window_days calendar days with no valid SYSTEM_ON/SYSTEM_OFF per store+dept.
 def find_missing_systemon_streaks(df: pd.DataFrame, window_days: int = 7) -> list[dict]:
-    """Find calendar runs of missing SYSTEM_ON / SYSTEM_OFF readings per store+dept.
-
-    A day counts as missing if there is no SYSTEM row for that store+dept on that
-    date, or all such rows have null/blank-equivalent metricvalue.
-    """
     need = {COL_STORE, COL_DEPT, COL_METRIC, COL_DATE, COL_VALUE}
     if need - set(df.columns):
         return []
@@ -150,6 +144,7 @@ def find_missing_systemon_streaks(df: pd.DataFrame, window_days: int = 7) -> lis
     if pd.isna(d_min) or pd.isna(d_max):
         return []
 
+    # Whether that store/dept has a non-null system metric reading on day.
     def day_valid(store: Any, dept: Any, day: pd.Timestamp) -> bool:
         rows = sys_df[
             (sys_df[COL_STORE] == store)
@@ -227,26 +222,8 @@ def find_inconsistent_grain(
     min_distinct_days: int = 3,
     min_avg_value: float | None = None,
 ) -> list[dict]:
-    """Flag missing (Deptname, metriccode) combos on the reference day versus recent history.
-
-    Compares rows on the reference calendar day to the union of combos seen on each
-    of the ``lookback_days`` immediately prior days for the same store.
-
-    Args:
-        df: Metrics dataframe with canonical columns (see ``load_metrics``).
-        lookback_days: Number of calendar days before the reference day to scan.
-        as_of: Reference calendar day (normalized). If ``None``, uses the latest
-            ``metricdate`` present in *df* (previous behavior).
-        min_distinct_days: Only flag if the combo appeared on at least this many
-            distinct calendar days in the lookback window.
-        min_avg_value: When set, only flag if the mean ``metricvalue`` over
-            lookback rows for that combo is >= this threshold (filters tiny/noisy
-            metrics). Requires ``metricvalue`` column.
-
-    Returns:
-        Anomaly dicts with ``issue_type`` ``Inconsistent Grain``. Requires at least
-        one row for each store on the reference day so expectations are grounded.
-    """
+    # Combos frequent in prior lookback_days but absent on reference day (as_of or max date).
+    # min_distinct_days / min_avg_value filter noise; needs rows on reference day per store.
     need = {COL_STORE, COL_DEPT, COL_METRIC, COL_DATE}
     if need - set(df.columns):
         return []

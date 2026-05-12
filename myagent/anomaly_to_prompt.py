@@ -1,4 +1,4 @@
-"""Serialize anomaly dicts into a structured, store-level block for the LLM."""
+# Serialize anomaly dicts into a structured, store-level block for the LLM.
 
 from __future__ import annotations
 
@@ -14,18 +14,20 @@ _ISSUE_SHORT = {
 }
 
 
+# Abbreviated label for issue_type in rollup summaries.
 def _short_issue(issue_type: str) -> str:
     return _ISSUE_SHORT.get(issue_type, issue_type)
 
 
+# Comma-separated counts of short issue labels across records.
 def _rollup_issue_types(records: list[dict]) -> str:
     c = Counter(_short_issue(r.get("issue_type", "")) for r in records)
     parts = [f"{k} {v}" for k, v in sorted(c.items(), key=lambda x: (-x[1], x[0]))]
     return ", ".join(parts) if parts else "none"
 
 
+# One key=value style line for an anomaly (machine-readable tail).
 def _structured_line(rec: dict) -> str:
-    """Single machine-readable summary line for one anomaly."""
     d = rec.get("details", "").replace('"', "'")
     return (
         f"storeid={rec.get('storeid')}, deptname={rec.get('deptname')}, "
@@ -39,14 +41,8 @@ def _structured_line(rec: dict) -> str:
     )
 
 
+# Markdown sections by store/dept; top High/Medium lines + machine-readable list (needs enrich_anomalies fields).
 def format_anomalies_for_llm(anomalies: list[dict]) -> str:
-    """Build store/dept headers with severity rollups and selective detail lines.
-
-    Expects each record to include ``severity``, ``impact_score``, and business
-    impact fields (see ``enrich_anomalies``). Groups anomalies for easier model
-    consumption; emits machine-readable lines for High/Medium items and a short
-    tail summary for Low-severity volume.
-    """
     if not anomalies:
         return (
             "No deterministic anomalies were detected in the supplied data window."
@@ -81,6 +77,7 @@ def format_anomalies_for_llm(anomalies: list[dict]) -> str:
             f"({rollup})"
         )
 
+        # Order by severity rank first, then higher impact_score.
         def sort_key(r: dict) -> tuple[int, float]:
             sev = r.get("severity") or "Low"
             return (_SEVERITY_RANK.get(sev, 2), -float(r.get("impact_score") or 0))

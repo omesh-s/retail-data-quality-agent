@@ -1,9 +1,5 @@
-"""Lightweight evaluation: detector + enrichment coverage on labeled scenarios.
-
-Runs ``python evaluate.py`` for deterministic checks (no API).
-Use ``python evaluate.py --with-llm`` to also score whether the model output
-mentions expected keywords (requires ``GOOGLE_API_KEY`` / project credentials).
-"""
+# Lightweight evaluation: detector + enrichment on labeled scenarios.
+# python evaluate.py — deterministic only; --with-llm adds Gemini keyword checks (needs API creds).
 
 from __future__ import annotations
 
@@ -26,16 +22,16 @@ from myagent.anomaly_detector import (
 from myagent.anomaly_impact import enrich_anomalies
 
 
+# One expected detector/enrichment outcome for a test scenario.
 @dataclass
 class Expectation:
-    """What we expect the pipeline to surface for a scenario."""
-
     issue_type: str
     metriccode: str | None = None
     min_severity: str | None = None
     llm_keywords: list[str] = field(default_factory=list)
 
 
+# Named synthetic window, as-of day, and list of expectations.
 @dataclass
 class Scenario:
     name: str
@@ -44,10 +40,12 @@ class Scenario:
     expect: list[Expectation]
 
 
+# Numeric order for comparing severities (High > Medium > Low).
 def _severity_rank(s: str) -> int:
     return {"High": 3, "Medium": 2, "Low": 1}.get(s, 0)
 
 
+# True if rec satisfies expect (issue type, optional metric, min severity).
 def _matches(expect: Expectation, rec: dict) -> bool:
     if expect.issue_type != rec.get("issue_type"):
         return False
@@ -59,6 +57,7 @@ def _matches(expect: Expectation, rec: dict) -> bool:
     return True
 
 
+# Run all detectors on window_df and return enriched anomaly dicts.
 def _run_pipeline(window_df: pd.DataFrame, as_of: pd.Timestamp) -> list[dict]:
     raw: list[dict] = []
     raw.extend(find_negative_outliers(window_df))
@@ -76,8 +75,8 @@ def _run_pipeline(window_df: pd.DataFrame, as_of: pd.Timestamp) -> list[dict]:
     return enrich_anomalies(window_df, raw, as_of=as_of)
 
 
+# Curated micro-datasets (canonical column names).
 def _build_scenarios() -> list[Scenario]:
-    """Curated micro-datasets (canonical column names)."""
     scenarios: list[Scenario] = []
 
     # 1–2: Negative outliers
@@ -433,10 +432,12 @@ def _build_scenarios() -> list[Scenario]:
     return scenarios
 
 
+# True if some enriched row matches expect.
 def _detector_hits(expect: Expectation, enriched: list[dict]) -> bool:
     return any(_matches(expect, r) for r in enriched)
 
 
+# True if text contains every keyword (case-insensitive), or no keywords given.
 def _llm_mentions(text: str, keywords: list[str]) -> bool:
     if not keywords:
         return True
@@ -444,6 +445,7 @@ def _llm_mentions(text: str, keywords: list[str]) -> bool:
     return all(kw.lower() in low for kw in keywords)
 
 
+# Optional Gemini pass: summarize each scenario and check keyword presence.
 async def _maybe_llm_eval(scenarios: list[Scenario], enriched_by_name: dict[str, list[dict]]) -> None:
     from google.adk.runners import InMemoryRunner
 
@@ -492,6 +494,7 @@ async def _maybe_llm_eval(scenarios: list[Scenario], enriched_by_name: dict[str,
         print(f"\nLLM keyword checks: {llm_matched}/{llm_total}")
 
 
+# CLI: run scenario tests; optionally verify LLM summaries mention keywords.
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate detectors + enrichment (+ optional LLM).")
     parser.add_argument(
@@ -546,5 +549,6 @@ def main() -> None:
         asyncio.run(_maybe_llm_eval(scenarios, enriched_by_name))
 
 
+# Allow: python evaluate.py [--with-llm]
 if __name__ == "__main__":
     main()

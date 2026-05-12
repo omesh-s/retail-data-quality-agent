@@ -1,4 +1,4 @@
-"""ADK tool: run live anomaly detection for the web chatbot."""
+# ADK tool: run live anomaly detection for the web chatbot.
 
 from __future__ import annotations
 
@@ -8,33 +8,12 @@ from config.settings import get_settings
 from myagent.pipeline import DEFAULT_CSV, run_detection_pipeline
 
 
+# Run detection pipeline from settings (CSV path, thresholds); save raw exports; return formatted_prompt for the model.
+# as_of_date or ISO date in user_message or latest CSV date. Same prompt shape as run_day.py.
 def run_retail_data_quality_analysis(
     user_message: str = "",
     as_of_date: str | None = None,
 ) -> str:
-    """Run the real retail metrics pipeline and return structured facts for summarization.
-
-    **Call this tool for every request** about data quality, anomalies, or a specific
-    day's metrics—before answering. The return value is the only authoritative anomaly
-    list (with severities and impact fields). Do not invent anomalies.
-
-    The pipeline loads the metrics CSV, runs deterministic detectors, enriches
-    records, writes ``output/raw_anomalies_<date>.json`` and ``.csv``, and returns
-    the same prompt block used by ``run_day.py``.
-
-    Args:
-        user_message: The user's message (used to find ``YYYY-MM-DD`` if ``as_of_date``
-            is omitted).
-        as_of_date: Calendar day ``YYYY-MM-DD``. If omitted and no ISO date appears
-            in ``user_message``, the latest ``metricdate`` in the CSV is used.
-
-    Returns:
-        Full formatted user prompt (date line + structured anomaly sections) to ground
-        the model reply.
-
-    Configuration:
-        See ``config/settings.py`` / ``.env.example`` (``RETAIL_*`` variables).
-    """
     load_dotenv()
     s = get_settings()
     csv_path = s.retail_metrics_csv or DEFAULT_CSV
