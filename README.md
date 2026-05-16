@@ -2,17 +2,18 @@
 
 A retail data quality agent that detects anomalies in daily store metrics and summarizes them through both a CLI and a browser-based ADK chat interface. It runs **deterministic Python checks** (pandas) for continuity gaps, positive spikes, negative outliers, and inconsistent grain, then scores and groups results. A **Google ADK + Gemini** model turns that structured output into short summaries.
 
-You can use the project in three complementary ways:
+You can use the project in four complementary ways:
 
-- **CLI** — `run_day.py` for a given date (prints a summary to the terminal).
+- **CLI (LLM summary)** — `run_day.py` for a given date (prints a Gemini summary to the terminal).
+- **Daily report (ops)** — `run_daily_report.py` runs the same detectors, builds a top-issues report, and can post to **Slack** (no LLM required).
 - **Browser (ADK)** — `adk web .` opens the ADK chat UI; the agent calls the **same live pipeline** as the CLI via an ADK tool (not a hardcoded sample payload).
-- **HTTP companion** — optional FastAPI app (`app/main.py`) with a **`/health`** probe and room to grow (orchestration, internal tools). Default bind is **`127.0.0.1:8080`** so it does not collide with ADK Web’s usual **`:8000`** port.
+- **HTTP companion** — optional FastAPI app (`app/main.py`) with **`/health`** and **`POST /internal/daily-report`**. Default bind is **`127.0.0.1:8080`** (ADK Web usually uses **`:8000`**).
 
 ## Problem statement
 
 Daily metrics (store, department, metric code) need monitoring: missing system indicators, impossible negatives on volume-style metrics, suspicious spikes, and **grain** issues (expected store / department / metric combinations missing on a day when history suggests they should appear). Raw rule hits are noisy; **severity** should come from code (`impact_score`, High/Medium/Low), not from the model guessing.
 
-The stack is: **detect → enrich → optional top‑N for the LLM → format for the model → Gemini explains** using only the supplied facts.
+The stack is: **load metrics (data source) → detect → enrich → report / optional LLM → deliver (Slack, exports, stdout)**. Detection logic lives in `myagent/pipeline.py`; where data comes from and where reports go are separate layers.
 
 ## Prerequisites
 
@@ -45,10 +46,14 @@ Then:
 
 ```bash
 python evaluate.py
+pytest tests -q
+python run_daily_report.py --date 2024-05-20 --no-send-slack
 python run_day.py --date 2024-05-20 --grain-min-avg 100 --top-n 5
 ```
 
 - `evaluate.py` — deterministic scenario checks only (no Gemini unless you pass `--with-llm`).
+- `pytest tests -q` — unit tests for data sources, reporting, Slack client, daily orchestration.
+- `run_daily_report.py` — pipeline + top-issues report + optional Slack; **no Gemini** required.
 - `run_day.py` — runs the full pipeline and prints a summary; **requires** Gemini (or equivalent) configuration.
 
 **Configuration (shared defaults)** — `config/settings.py` loads environment variables (see `.env.example`). CLI flags override those defaults. The ADK tool (`myagent/retail_tool.py`) reads the same settings for pipeline parameters and CSV path.
@@ -57,7 +62,7 @@ python run_day.py --date 2024-05-20 --grain-min-avg 100 --top-n 5
 
 - Deterministic evaluation: **13/13** scenario checks passed (`python evaluate.py`).
 - **CLI and ADK web chat share the same backend**: `myagent/pipeline.py` (`run_detection_pipeline`). For the same date and settings, both consume the same detector and enrichment output; the written summary may differ slightly per model run, but it is grounded in the same anomaly list and severities.
-- The **FastAPI companion** reuses **`config/settings.py`** for service/logging defaults only; it does not fork detection logic. Adding HTTP-triggered pipeline calls later would call `run_detection_pipeline` explicitly—same as today.
+- **`run_daily_report.py`** and **`POST /internal/daily-report`** call the same **`run_detection_pipeline_from_dataframe`** path via **`myagent/orchestration/daily_report.py`**.
 
 ## Architecture
 
@@ -97,11 +102,12 @@ Shared **detection pipeline** (CSV → window → rules → `enrich_anomalies` �
          ┌─────────────────────┴─────────────────────┐
          ▼                                           ▼
   run_day.py → InMemoryRunner                  adk web → root_agent
-  (CLI, prints summary)                        calls tool → same pipeline
-                                               then Gemini summarizes
+  (CLI + Gemini summary)                       tool → run_detection_pipeline (CSV)
 
-  uvicorn app.main:app                         (optional) /health + future routes;
-  (127.0.0.1:8080 by default)                  does not replace ADK Web or the pipeline
+  run_daily_report.py / POST /internal/...     data source → pipeline_from_dataframe
+  → top issues → optional Slack                (no Gemini)
+
+  uvicorn app.main:app — /health, /internal/daily-report (127.0.0.1:8080)
 ```
 
 **Entry points**
@@ -109,8 +115,9 @@ Shared **detection pipeline** (CSV → window → rules → `enrich_anomalies` �
 | Path | What it does |
 |------|----------------|
 | **`run_day.py`** | Thin CLI: calls `run_detection_pipeline` in `myagent/pipeline.py`, then runs the root agent on the formatted prompt (stdout). |
-| **`adk web .`** | Web UI: user chats with `root_agent` in `myagent/agent.py`. The agent invokes **`run_retail_data_quality_analysis`** (`myagent/retail_tool.py`), which calls the **same** `run_detection_pipeline`. |
-| **`uvicorn app.main:app`** | Small FastAPI service: **`GET /health`**, structured logging hooks, Pydantic response schemas. Complements CLI/ADK; anomaly logic stays in `myagent/`. |
+| **`run_daily_report.py`** | Data source → pipeline → top-issues report → optional Slack. |
+| **`adk web .`** | Web UI + Gemini; tool calls **`run_detection_pipeline`** (CSV). |
+| **`uvicorn app.main:app`** | **`GET /health`**, **`POST /internal/daily-report`** (same orchestration as daily report CLI). |
 
 There is **no** separate fake anomaly payload for the web: CLI and ADK both execute the real detectors and enrichment on your CSV. The FastAPI app is a **sidecar** for probes and future HTTP integration, not a second pipeline.
 
@@ -152,6 +159,39 @@ Artifacts:
 - `output/raw_anomalies_<YYYY-MM-DD>.json`
 - `output/raw_anomalies_<YYYY-MM-DD>.csv`
 
+## Data sources
+
+Metrics are loaded through a small provider layer (`myagent/data_sources/`), not hard-coded inside detectors.
+
+| Provider | `RETAIL_DATA_SOURCE` | Status |
+|----------|----------------------|--------|
+| Local CSV | `local_csv` (default) | **Fully working** — uses `RETAIL_METRICS_CSV` or `data/retail_data_quality_sim.csv` |
+| Databricks MCP | `databricks_mcp` | **Scaffold** — validates env config; query execution raises `NotImplementedError` until wired |
+
+Orchestration (`run_daily_report`, future jobs) calls `get_metrics_data_source()` → `fetch_metrics()` → `run_detection_pipeline_from_dataframe()`. **`run_day.py`** and **`adk web`** still load via CSV path today (same file, same `load_metrics` normalization).
+
+## Daily report and Slack
+
+**`run_daily_report.py`** — scheduled-job style entry (no LLM):
+
+```bash
+python run_daily_report.py --date 2024-05-20 --no-send-slack
+python run_daily_report.py --date 2024-05-20 --send-slack
+python run_daily_report.py --date 2024-05-20 --json
+```
+
+| Flag | Purpose |
+|------|---------|
+| `--date` | As-of day (default: latest date in data) |
+| `--source` | `local_csv` or `databricks_mcp` |
+| `--csv` | CSV path override (`local_csv` only) |
+| `--top-n` | Global top issues in the report (`DAILY_REPORT_TOP_N`, default 10) |
+| `--top-n-llm` | Per store/dept cap for internal prompt formatting (`RETAIL_TOP_N`) |
+| `--send-slack` / `--no-send-slack` | Force Slack on/off |
+| `--json` | Structured stdout |
+
+**Slack** uses an [Incoming Webhook](https://api.slack.com/messaging/webhooks) (`SLACK_WEBHOOK_URL`). Set `SLACK_ENABLED=true` for default-on behavior, or pass `--send-slack` per run. Failures are logged; the CLI exits non-zero if `--send-slack` was requested and delivery failed.
+
 ## Companion HTTP API (FastAPI)
 
 Optional service for **health checks** and future operational endpoints. It does **not** host the ADK chat UI and does **not** duplicate anomaly logic.
@@ -172,7 +212,10 @@ Smoke test:
 
 ```bash
 curl -s http://127.0.0.1:8080/health
+curl -s -X POST "http://127.0.0.1:8080/internal/daily-report?as_of_date=2024-05-20&send_slack=false"
 ```
+
+`POST /internal/daily-report` runs the same orchestration as `run_daily_report.py` (detectors + top-issues payload; optional Slack). It does **not** call Gemini.
 
 **Logging**
 
@@ -241,11 +284,17 @@ Anomalies Found:
 
 | Path | Role |
 |------|------|
-| `myagent/pipeline.py` | **Core pipeline** — `run_detection_pipeline`: CSV window, detectors, enrichment, `output/raw_*`, formatted prompt. **Source of truth** for batch analysis. |
-| `myagent/retail_tool.py` | **ADK tool** — `run_retail_data_quality_analysis`; uses `config/settings.py` and the shared pipeline for **`adk web`**. |
+| `myagent/pipeline.py` | **Core pipeline** — `run_detection_pipeline` / `run_detection_pipeline_from_dataframe`; detectors, enrichment, exports. **Source of truth**. |
+| `myagent/data_sources/` | **Data access** — `local_csv`, `databricks_mcp` scaffold, `get_metrics_data_source()`. |
+| `myagent/orchestration/daily_report.py` | **Daily workflow** — data source → pipeline → top issues → optional Slack. |
+| `myagent/reporting/` | **Report text** — health summary, top-N selection, Slack message formatting. |
+| `myagent/integrations/slack.py` | **Slack** — Incoming Webhook client. |
+| `run_daily_report.py` | **CLI** — daily run + optional Slack (no LLM). |
+| `myagent/retail_tool.py` | **ADK tool** — `run_retail_data_quality_analysis`; uses settings + pipeline for **`adk web`**. |
 | `myagent/agent.py` | **Agent** — `root_agent`, tool registration, summarization instructions. |
-| `run_day.py` | **CLI entry** — pipeline + `InMemoryRunner` + stdout; argparse defaults from settings / `.env`. |
-| `evaluate.py` | **Eval entry** — scenario checks on detectors + enrichment (optional `--with-llm`). |
+| `run_day.py` | **CLI** — pipeline + `InMemoryRunner` + Gemini summary. |
+| `evaluate.py` | **Eval** — scenario checks on detectors + enrichment (optional `--with-llm`). |
+| `tests/` | **Unit tests** — data sources, reporting, Slack (mocked), orchestration. |
 | `myagent/anomaly_detector.py` | **Detection** — `load_metrics`, `find_*` rule functions. |
 | `myagent/anomaly_impact.py` | **Enrichment** — `enrich_anomalies`. |
 | `myagent/anomaly_to_prompt.py` | **Prompt shaping** — `format_anomalies_for_llm`. |

@@ -70,11 +70,66 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("RETAIL_TOP_N", "retail_top_n"),
     )
 
+    # Metrics data source
+    retail_data_source: Literal["local_csv", "databricks_mcp"] = Field(
+        default="local_csv",
+        validation_alias=AliasChoices("RETAIL_DATA_SOURCE", "retail_data_source"),
+    )
+
+    # Databricks MCP (scaffold — query execution not implemented)
+    databricks_mcp_server_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "DATABRICKS_MCP_SERVER_URL", "databricks_mcp_server_url"
+        ),
+    )
+    databricks_metrics_catalog: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "DATABRICKS_METRICS_CATALOG", "databricks_metrics_catalog"
+        ),
+    )
+    databricks_metrics_schema: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "DATABRICKS_METRICS_SCHEMA", "databricks_metrics_schema"
+        ),
+    )
+    databricks_metrics_table: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "DATABRICKS_METRICS_TABLE", "databricks_metrics_table"
+        ),
+    )
+
+    # Slack daily reporting
+    slack_enabled: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("SLACK_ENABLED", "slack_enabled"),
+    )
+    slack_webhook_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("SLACK_WEBHOOK_URL", "slack_webhook_url"),
+    )
+    slack_timeout_seconds: float = Field(
+        default=10.0,
+        validation_alias=AliasChoices("SLACK_TIMEOUT_SECONDS", "slack_timeout_seconds"),
+    )
+    daily_report_top_n: int = Field(
+        default=10,
+        validation_alias=AliasChoices("DAILY_REPORT_TOP_N", "daily_report_top_n"),
+    )
+
     @field_validator(
         "retail_metrics_csv",
         "log_config_file",
         "retail_grain_min_avg",
         "retail_top_n",
+        "databricks_mcp_server_url",
+        "databricks_metrics_catalog",
+        "databricks_metrics_schema",
+        "databricks_metrics_table",
+        "slack_webhook_url",
         mode="before",
     )
     @classmethod

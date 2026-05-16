@@ -1,0 +1,17 @@
+---
+alwaysApply: true
+---
+
+This repository is a Python retail data quality agent with a shared anomaly-detection pipeline.
+
+Rules:
+- Preserve existing working behavior unless explicitly asked to change it.
+- Make small, safe, incremental edits instead of broad rewrites.
+- Keep `myagent/pipeline.py` as the source of truth for anomaly analysis.
+- Do not break `run_day.py`, `evaluate.py`, `adk web .`, or the current README workflow.
+- Prefer clean Python, FastAPI, pydantic-settings, structured logging, and testable code.
+- Do not introduce fake enterprise complexity or placeholder architecture.
+- Remove or avoid any internal/company-specific names, secrets, URLs, cert references, or identifiers.
+- Update documentation only to reflect real tested behavior.
+- When making changes, summarize edited files, reasoning, and exact commands to run and verify.
+- If a task is ambiguous, inspect the current repo structure before editing.

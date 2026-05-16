@@ -139,6 +139,34 @@ class PipelineResult:
     as_of_str: str
 
 
+def run_detection_pipeline_from_dataframe(
+    metrics_df: pd.DataFrame,
+    *,
+    as_of_date: str | None = None,
+    user_message: str = "",
+    history_days: int = 30,
+    z_threshold: float = 4.0,
+    grain_min_distinct_days: int = 3,
+    grain_min_avg: float | None = None,
+    top_n: int | None = None,
+    save_exports: bool = True,
+    output_dir: str | Path | None = None,
+) -> PipelineResult:
+    """Run detectors on an in-memory metrics DataFrame (orchestration / data sources)."""
+    return _run_pipeline_core(
+        metrics_df,
+        as_of_date=as_of_date,
+        user_message=user_message,
+        history_days=history_days,
+        z_threshold=z_threshold,
+        grain_min_distinct_days=grain_min_distinct_days,
+        grain_min_avg=grain_min_avg,
+        top_n=top_n,
+        save_exports=save_exports,
+        output_dir=output_dir,
+    )
+
+
 def run_detection_pipeline(
     csv_path: str | Path,
     *,
@@ -157,6 +185,33 @@ def run_detection_pipeline(
     # top_n caps per (store, dept) before format_anomalies_for_llm; grain_* tune inconsistent-grain rule.
     path = Path(csv_path)
     full = load_metrics(str(path))
+    return _run_pipeline_core(
+        full,
+        as_of_date=as_of_date,
+        user_message=user_message,
+        history_days=history_days,
+        z_threshold=z_threshold,
+        grain_min_distinct_days=grain_min_distinct_days,
+        grain_min_avg=grain_min_avg,
+        top_n=top_n,
+        save_exports=save_exports,
+        output_dir=output_dir,
+    )
+
+
+def _run_pipeline_core(
+    full: pd.DataFrame,
+    *,
+    as_of_date: str | None = None,
+    user_message: str = "",
+    history_days: int = 30,
+    z_threshold: float = 4.0,
+    grain_min_distinct_days: int = 3,
+    grain_min_avg: float | None = None,
+    top_n: int | None = None,
+    save_exports: bool = True,
+    output_dir: str | Path | None = None,
+) -> PipelineResult:
     as_of_ts = resolve_as_of_timestamp(full, as_of_date, user_message)
     as_of_str = as_of_ts.strftime("%Y-%m-%d")
 

@@ -11,6 +11,7 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from app.api.routes import daily_report as daily_report_routes
 from app.api.routes import health as health_routes
 from app.logging_setup import configure_logging
 from app.schemas.responses import ErrorResponse
@@ -45,6 +46,7 @@ async def validation_handler(
 
 
 app.include_router(health_routes.router)
+app.include_router(daily_report_routes.router)
 
 
 # One-time log line when the process starts.
