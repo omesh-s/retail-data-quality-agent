@@ -1,4 +1,4 @@
-# CLI: run detection for a day and summarize with the ADK/Gemini agent.
+"""CLI: run detection for a day and summarize with the ADK/Gemini agent."""
 
 from __future__ import annotations
 
@@ -12,11 +12,11 @@ from google.adk.runners import InMemoryRunner
 
 from config.settings import get_settings
 from myagent import root_agent
-from myagent.pipeline import DEFAULT_CSV, OUTPUT_DIR, run_detection_pipeline
+from myagent.orchestration.pipeline_run import run_anomaly_pipeline
 
 
-# Collect human-readable model text from ADK events for one turn.
 def _final_text_from_events(events: list) -> str:
+    """Collect human-readable model text from ADK events for one turn."""
     parts: list[str] = []
     for ev in events:
         if ev.author == "user":
@@ -32,7 +32,6 @@ def _final_text_from_events(events: list) -> str:
     return "\n".join(parts).strip()
 
 
-# Send prompt to the ADK agent and return the final model text.
 async def _run_agent(prompt: str) -> str:
     runner = InMemoryRunner(agent=root_agent, app_name="retail_data_quality_cli")
     session_id = f"run_day_{uuid.uuid4().hex}"
@@ -46,13 +45,10 @@ async def _run_agent(prompt: str) -> str:
     return _final_text_from_events(events)
 
 
-# Parse CLI args, run the detection pipeline, print the Gemini summary.
 def main() -> None:
     load_dotenv()
     get_settings.cache_clear()
     s = get_settings()
-
-    default_csv = s.retail_metrics_csv or DEFAULT_CSV
 
     parser = argparse.ArgumentParser(
         description="Detect retail metric anomalies for a date and summarize with Gemini."
@@ -65,8 +61,17 @@ def main() -> None:
     parser.add_argument(
         "--csv",
         type=Path,
-        default=default_csv,
-        help=f"Path to metrics CSV (default: from RETAIL_METRICS_CSV or {DEFAULT_CSV})",
+        default=None,
+        help=(
+            "Override: load metrics from this CSV via local_csv "
+            "(ignores RETAIL_DATA_SOURCE for fetch)"
+        ),
+    )
+    parser.add_argument(
+        "--source",
+        choices=["local_csv", "databricks_mcp"],
+        default=None,
+        help="Override RETAIL_DATA_SOURCE for this run (ignored if --csv is set)",
     )
     parser.add_argument(
         "--history-days",
@@ -100,23 +105,23 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    result = run_detection_pipeline(
-        args.csv,
+    run_result = run_anomaly_pipeline(
         as_of_date=args.date,
         user_message="",
+        settings=s,
+        data_source=args.source,
+        csv_path=args.csv,
         history_days=args.history_days,
         z_threshold=args.z_threshold,
         grain_min_distinct_days=args.grain_min_distinct_days,
         grain_min_avg=args.grain_min_avg,
         top_n=args.top_n,
         save_exports=True,
-        output_dir=OUTPUT_DIR,
     )
 
-    summary = asyncio.run(_run_agent(result.formatted_prompt))
+    summary = asyncio.run(_run_agent(run_result.pipeline.formatted_prompt))
     print(summary)
 
 
-# Allow: python run_day.py --date ...
 if __name__ == "__main__":
     main()

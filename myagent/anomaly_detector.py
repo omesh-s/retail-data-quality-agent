@@ -24,11 +24,12 @@ def _norm_metric_code(value: Any) -> str:
     return str(value).replace("_", "").strip().upper()
 
 
-# Load CSV; rename columns to canonical names; parse dates and numeric metricvalue.
-def load_metrics(csv_path: str) -> pd.DataFrame:
-    df = pd.read_csv(csv_path)
+# Rename columns to canonical names; parse dates and numeric metricvalue.
+def normalize_metrics_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize arbitrary retail metrics columns to the pipeline contract."""
+    out = df.copy()
     rename_map: dict[str, str] = {}
-    lower_to_actual = {c.lower(): c for c in df.columns}
+    lower_to_actual = {c.lower(): c for c in out.columns}
     pairs = [
         (["deptname", "dept_name"], COL_DEPT),
         (["metriccode", "metric_code"], COL_METRIC),
@@ -44,11 +45,21 @@ def load_metrics(csv_path: str) -> pd.DataFrame:
                 if src != target:
                     rename_map[src] = target
                 break
-    df = df.rename(columns=rename_map)
-    df[COL_DATE] = pd.to_datetime(df[COL_DATE], errors="coerce")
-    # Coerce metric values: blanks / invalid -> NaN
-    df[COL_VALUE] = pd.to_numeric(df[COL_VALUE], errors="coerce")
-    return df
+    out = out.rename(columns=rename_map)
+    if COL_DATE not in out.columns:
+        raise ValueError(
+            f"Metrics data missing date column (expected one of metricdate, metric_date); "
+            f"got: {list(out.columns)}"
+        )
+    out[COL_DATE] = pd.to_datetime(out[COL_DATE], errors="coerce")
+    if COL_VALUE in out.columns:
+        out[COL_VALUE] = pd.to_numeric(out[COL_VALUE], errors="coerce")
+    return out
+
+
+# Load CSV; rename columns to canonical names; parse dates and numeric metricvalue.
+def load_metrics(csv_path: str) -> pd.DataFrame:
+    return normalize_metrics_dataframe(pd.read_csv(csv_path))
 
 
 # True if this metric must never be negative (units, customers, revenue).

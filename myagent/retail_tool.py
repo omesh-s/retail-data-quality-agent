@@ -1,32 +1,45 @@
-# ADK tool: run live anomaly detection for the web chatbot.
+"""ADK tool: run live anomaly detection for the web chatbot."""
 
 from __future__ import annotations
 
 from dotenv import load_dotenv
 
 from config.settings import get_settings
-from myagent.pipeline import DEFAULT_CSV, run_detection_pipeline
+from myagent.orchestration.pipeline_run import run_anomaly_pipeline
 
 
-# Run detection pipeline from settings (CSV path, thresholds); save raw exports; return formatted_prompt for the model.
-# as_of_date or ISO date in user_message or latest CSV date. Same prompt shape as run_day.py.
 def run_retail_data_quality_analysis(
     user_message: str = "",
     as_of_date: str | None = None,
 ) -> str:
+    """Run the real retail metrics pipeline and return structured facts for summarization.
+
+    **Call this tool for every request** about data quality, anomalies, or a specific
+    day's metrics—before answering. The return value is the only authoritative anomaly
+    list (with severities and impact fields). Do not invent anomalies.
+
+    Resolves metrics through the configured data source (``RETAIL_DATA_SOURCE``),
+    runs deterministic detectors, enriches records, writes
+    ``output/raw_anomalies_<date>.json`` and ``.csv``, and returns the same prompt
+    block used by ``run_day.py``.
+
+    Args:
+        user_message: The user's message (used to find ``YYYY-MM-DD`` if ``as_of_date``
+            is omitted).
+        as_of_date: Calendar day ``YYYY-MM-DD``. If omitted and no ISO date appears
+            in ``user_message``, the latest ``metricdate`` in the data is used.
+
+    Returns:
+        Full formatted user prompt (date line + structured anomaly sections) to ground
+        the model reply.
+    """
     load_dotenv()
     s = get_settings()
-    csv_path = s.retail_metrics_csv or DEFAULT_CSV
 
-    result = run_detection_pipeline(
-        csv_path,
+    result = run_anomaly_pipeline(
         as_of_date=as_of_date if as_of_date and str(as_of_date).strip() else None,
         user_message=user_message or "",
-        history_days=s.retail_history_days,
-        z_threshold=s.retail_z_threshold,
-        grain_min_distinct_days=s.retail_grain_min_distinct,
-        grain_min_avg=s.retail_grain_min_avg,
-        top_n=s.retail_top_n,
+        settings=s,
         save_exports=True,
     )
-    return result.formatted_prompt
+    return result.pipeline.formatted_prompt

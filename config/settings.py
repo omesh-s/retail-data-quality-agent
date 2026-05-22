@@ -101,6 +101,30 @@ class Settings(BaseSettings):
             "DATABRICKS_METRICS_TABLE", "databricks_metrics_table"
         ),
     )
+    databricks_metrics_sql: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "DATABRICKS_METRICS_SQL", "databricks_metrics_sql"
+        ),
+    )
+    databricks_mcp_tool_name: str = Field(
+        default="execute_sql",
+        validation_alias=AliasChoices(
+            "DATABRICKS_MCP_TOOL_NAME", "databricks_mcp_tool_name"
+        ),
+    )
+    databricks_mcp_auth_token: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "DATABRICKS_MCP_AUTH_TOKEN", "databricks_mcp_auth_token"
+        ),
+    )
+    databricks_mcp_timeout_seconds: float = Field(
+        default=60.0,
+        validation_alias=AliasChoices(
+            "DATABRICKS_MCP_TIMEOUT_SECONDS", "databricks_mcp_timeout_seconds"
+        ),
+    )
 
     # Slack daily reporting
     slack_enabled: bool = Field(
@@ -129,6 +153,8 @@ class Settings(BaseSettings):
         "databricks_metrics_catalog",
         "databricks_metrics_schema",
         "databricks_metrics_table",
+        "databricks_metrics_sql",
+        "databricks_mcp_auth_token",
         "slack_webhook_url",
         mode="before",
     )

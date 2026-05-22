@@ -33,6 +33,7 @@ def test_run_daily_report_local_csv_no_slack(mock_slack, sample_csv_path, tmp_pa
     )
     mock_slack.assert_not_called()
     assert result.report.as_of == "2024-05-20"
+    assert result.data_source == "local_csv"
     assert result.report.data_source == "local_csv"
     assert result.report.total_anomalies >= 0
     assert result.export_paths is not None
