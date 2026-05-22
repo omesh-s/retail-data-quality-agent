@@ -9,3 +9,5 @@ pydantic-settings>=2.0.0
 pyyaml>=6.0.1
 requests>=2.31.0
 pytest>=8.0.0
+questionary>=2.0.0
+pyarrow>=14.0.0

@@ -55,6 +55,37 @@ def test_mcp_client_parses_json_rows_in_content():
     assert "dept_name" in df.columns or "Deptname" in df.columns
 
 
+def test_mcp_client_sends_auth_header():
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {"result": {"content": [{"type": "text", "text": "[]"}]}}
+    session = MagicMock()
+    session.post.return_value = mock_resp
+
+    client = DatabricksMcpClient(
+        _settings(databricks_mcp_auth_token="secret-token"), session=session
+    )
+    client.execute_sql("SELECT 1")
+    call_kwargs = session.post.call_args.kwargs
+    headers = call_kwargs.get("headers", {})
+    assert headers.get("Authorization") == "Bearer secret-token"
+
+
+def test_mcp_client_parses_csv_text_in_content():
+    csv_text = "dept_name,metric_code,store_id,metric_date,metric_value\nDairy,CUST_COUNT,1,2024-05-20,1.0\n"
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "result": {"content": [{"type": "text", "text": csv_text}]}
+    }
+    session = MagicMock()
+    session.post.return_value = mock_resp
+
+    client = DatabricksMcpClient(_settings(), session=session)
+    df = client.execute_sql("SELECT 1")
+    assert len(df) == 1
+
+
 def test_mcp_client_http_error():
     mock_resp = MagicMock()
     mock_resp.status_code = 500

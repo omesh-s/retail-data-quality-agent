@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -24,42 +25,29 @@ def _norm_metric_code(value: Any) -> str:
     return str(value).replace("_", "").strip().upper()
 
 
-# Rename columns to canonical names; parse dates and numeric metricvalue.
-def normalize_metrics_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+def normalize_metrics_dataframe(
+    df: pd.DataFrame,
+    *,
+    profile: str | None = None,
+    map_file: Path | None = None,
+) -> pd.DataFrame:
     """Normalize arbitrary retail metrics columns to the pipeline contract."""
-    out = df.copy()
-    rename_map: dict[str, str] = {}
-    lower_to_actual = {c.lower(): c for c in out.columns}
-    pairs = [
-        (["deptname", "dept_name"], COL_DEPT),
-        (["metriccode", "metric_code"], COL_METRIC),
-        (["storeid", "store_id"], COL_STORE),
-        (["metricdate", "metric_date"], COL_DATE),
-        (["metricvalue", "metric_value"], COL_VALUE),
-        (["subdept"], "Subdept"),
-    ]
-    for candidates, target in pairs:
-        for cand in candidates:
-            if cand in lower_to_actual:
-                src = lower_to_actual[cand]
-                if src != target:
-                    rename_map[src] = target
-                break
-    out = out.rename(columns=rename_map)
-    if COL_DATE not in out.columns:
-        raise ValueError(
-            f"Metrics data missing date column (expected one of metricdate, metric_date); "
-            f"got: {list(out.columns)}"
-        )
-    out[COL_DATE] = pd.to_datetime(out[COL_DATE], errors="coerce")
-    if COL_VALUE in out.columns:
-        out[COL_VALUE] = pd.to_numeric(out[COL_VALUE], errors="coerce")
-    return out
+    from config.schema_aliases import apply_schema_normalization
+    from config.settings import get_settings
+
+    s = get_settings()
+    return apply_schema_normalization(
+        df,
+        profile=profile or s.data_schema_profile,
+        map_file=map_file if map_file is not None else s.data_schema_map_file,
+    )
 
 
-# Load CSV; rename columns to canonical names; parse dates and numeric metricvalue.
 def load_metrics(csv_path: str) -> pd.DataFrame:
-    return normalize_metrics_dataframe(pd.read_csv(csv_path))
+    """Load metrics from CSV or Parquet with schema aliases and performance options."""
+    from myagent.data_loading import load_metrics_file
+
+    return load_metrics_file(csv_path)
 
 
 # True if this metric must never be negative (units, customers, revenue).

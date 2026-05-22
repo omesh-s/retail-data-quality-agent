@@ -215,6 +215,9 @@ def _run_pipeline_core(
     as_of_ts = resolve_as_of_timestamp(full, as_of_date, user_message)
     as_of_str = as_of_ts.strftime("%Y-%m-%d")
 
+    if COL_DATE in full.columns and not full[COL_DATE].is_monotonic_increasing:
+        full = full.sort_values(COL_DATE, kind="mergesort")
+
     window_df = filter_history_window(full, as_of_ts, history_days)
 
     anomalies: list[dict] = []

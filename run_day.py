@@ -12,6 +12,7 @@ from google.adk.runners import InMemoryRunner
 
 from config.settings import get_settings
 from myagent import root_agent
+from myagent.llm.summary import generate_text_summary
 from myagent.orchestration.pipeline_run import run_anomaly_pipeline
 
 
@@ -119,7 +120,11 @@ def main() -> None:
         save_exports=True,
     )
 
-    summary = asyncio.run(_run_agent(run_result.pipeline.formatted_prompt))
+    prompt = run_result.pipeline.formatted_prompt
+    if s.llm_provider == "googlegenai":
+        summary = asyncio.run(_run_agent(prompt))
+    else:
+        summary = generate_text_summary(s, prompt)
     print(summary)
 
 

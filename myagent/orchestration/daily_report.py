@@ -36,12 +36,14 @@ def resolve_send_slack(settings: Settings, send_slack: bool | None) -> bool:
     """Decide whether to POST to Slack for this run."""
     if send_slack is False:
         return False
+    if not settings.slack_webhook_url:
+        if send_slack is True:
+            logger.warning("Slack send requested but SLACK_WEBHOOK_URL is unset")
+        return False
     if send_slack is True:
-        if not settings.slack_webhook_url:
-            logger.warning("--send-slack requested but SLACK_WEBHOOK_URL is unset")
-            return False
         return True
-    return bool(settings.slack_enabled and settings.slack_webhook_url)
+    auto = settings.slack_enabled or settings.daily_report_default_send_slack
+    return bool(auto)
 
 
 def run_daily_report(

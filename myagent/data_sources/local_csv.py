@@ -8,7 +8,7 @@ from pathlib import Path
 import pandas as pd
 
 from config.settings import Settings
-from myagent.anomaly_detector import load_metrics
+from myagent.data_loading import load_metrics_file
 from myagent.pipeline import DEFAULT_CSV
 
 logger = logging.getLogger(__name__)
@@ -29,4 +29,4 @@ class LocalCsvMetricsSource:
         if not path.is_file():
             raise FileNotFoundError(f"Metrics CSV not found: {path}")
         logger.info("Loading metrics from local CSV: %s", path)
-        return load_metrics(str(path))
+        return load_metrics_file(path, self._settings)

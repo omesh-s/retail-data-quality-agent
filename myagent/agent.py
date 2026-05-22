@@ -3,12 +3,21 @@
 from google.adk.agents import Agent
 from google.adk.tools.function_tool import FunctionTool
 
+from config.settings import get_settings
 from myagent.retail_tool import run_retail_data_quality_analysis
 
-# Default agent used by ``adk web``, ``run_day.py``, and optional LLM eval.
+
+def _default_adk_model() -> str:
+    try:
+        return get_settings().llm_model
+    except Exception:
+        return "gemini-2.5-flash"
+
+
+# Default agent used by ``adk web`` (Google ADK / Gemini path).
 root_agent = Agent(
     name="retail_data_quality_agent",
-    model="gemini-2.5-flash",
+    model=_default_adk_model(),
     description="Analyzes retail metric anomalies and summarizes data quality issues.",
     tools=[FunctionTool(run_retail_data_quality_analysis)],
     instruction="""

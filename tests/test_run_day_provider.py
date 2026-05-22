@@ -29,7 +29,10 @@ def test_run_day_main_uses_run_anomaly_pipeline(
         ),
         data_source="local_csv",
     )
-    mock_get_settings.return_value = Settings()
+    mock_get_settings.return_value = Settings(
+        llm_provider="googlegenai",
+        google_api_key="test-key",
+    )
     mock_get_settings.cache_clear = MagicMock()
 
     with patch("sys.argv", ["run_day.py", "--date", "2024-05-20", "--csv", "data/x.csv"]):

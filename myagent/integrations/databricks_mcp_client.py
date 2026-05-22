@@ -16,6 +16,7 @@ import pandas as pd
 import requests
 
 from config.settings import Settings
+from myagent.integrations.mcp_types import McpToolsCallRequest, McpToolsCallResponse
 
 logger = logging.getLogger(__name__)
 
@@ -49,15 +50,8 @@ class DatabricksMcpClient:
         if token:
             headers["Authorization"] = f"Bearer {token}"
 
-        payload = {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/call",
-            "params": {
-                "name": tool_name,
-                "arguments": {"query": sql},
-            },
-        }
+        request = McpToolsCallRequest(tool_name=tool_name, query=sql)
+        payload = request.to_payload()
 
         logger.info(
             "Databricks MCP tools/call tool=%s host=%s",
@@ -84,12 +78,11 @@ class DatabricksMcpClient:
         except json.JSONDecodeError as exc:
             raise DatabricksMcpClientError("MCP response is not valid JSON") from exc
 
-        if "error" in body:
-            err = body["error"]
-            msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
-            raise DatabricksMcpClientError(f"MCP error: {msg}")
+        parsed = McpToolsCallResponse.from_http_json(body)
+        if not parsed.ok:
+            raise DatabricksMcpClientError(f"MCP error: {parsed.error_message}")
 
-        rows = _extract_rows_from_mcp_result(body.get("result", body))
+        rows = _extract_rows_from_mcp_result(parsed.result)
         if not rows:
             logger.warning("Databricks MCP returned zero rows")
             return pd.DataFrame()

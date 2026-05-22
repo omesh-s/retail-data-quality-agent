@@ -7,7 +7,7 @@ import logging
 import pandas as pd
 
 from config.settings import Settings
-from myagent.anomaly_detector import normalize_metrics_dataframe
+from config.schema_aliases import apply_schema_normalization
 from myagent.data_sources.base import DataSourceConfigurationError
 from myagent.integrations.databricks_mcp_client import (
     DatabricksMcpClient,
@@ -67,9 +67,17 @@ class DatabricksMcpMetricsSource:
 
         if raw.empty:
             logger.warning("Databricks MCP returned an empty metrics frame")
-            return normalize_metrics_dataframe(raw)
+            return apply_schema_normalization(
+                raw,
+                profile=self._settings.data_schema_profile,
+                map_file=self._settings.data_schema_map_file,
+            )
 
-        normalized = normalize_metrics_dataframe(raw)
+        normalized = apply_schema_normalization(
+            raw,
+            profile=self._settings.data_schema_profile,
+            map_file=self._settings.data_schema_map_file,
+        )
         logger.info(
             "Databricks MCP loaded %s rows (%s .. %s)",
             len(normalized),
