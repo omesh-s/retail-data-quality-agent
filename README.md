@@ -1,135 +1,307 @@
-# Retail Data Quality Agent (MCP-First)
+# Retail Data Quality Agent
 
-This repository is the **ADK agent layer** for retail data quality analysis.
+MCP-first ADK orchestration service for retail data quality analysis.
 
-The analysis backend is an **external MCP server** that queries Databricks SQL and applies the business rules.
+This repository is the agent/orchestration layer. The detection logic and Databricks access live in a paired MCP backend (`wfm_dq_mcp_server`). The supported production path is:
 
-Primary product path:
+`ADK web (this repo) -> MCP backend -> Databricks SQL`
 
-```bash
-adk web .
-```
+## Table of Contents
 
-## Paired Architecture
+- [Architecture](#architecture)
+- [Prerequisites](#prerequisites)
+- [Development Setup](#development-setup)
+- [Configuration](#configuration)
+- [Running the Application](#running-the-application)
+- [Health, Readiness, and Diagnostics](#health-readiness-and-diagnostics)
+- [Development Tools](#development-tools)
+- [Testing](#testing)
+- [Paired Local Run Profile](#paired-local-run-profile)
+- [Security and Authentication](#security-and-authentication)
+- [Observability and Logging](#observability-and-logging)
+- [Deployment](#deployment)
+- [Troubleshooting](#troubleshooting)
+- [Active Surface Quality Boundary](#active-surface-quality-boundary)
+- [Project Structure](#project-structure)
+- [Legacy/Internal Paths](#legacyinternal-paths)
 
-- **This repo** (`retail-data-quality-agent`) = ADK orchestration + concise business summarization
-- **MCP server repo/folder** (`wfm_dq_mcp_server`) = Databricks-backed API/backend logic
+## Architecture
 
-```mermaid
-flowchart LR
-  User[User] --> ADK[ADK Agent (this repo)]
-  ADK --> MCP[MCP Server (paired backend repo)]
-  MCP --> DB[Databricks SQL]
-  DB --> MCP
-  MCP --> ADK
-  ADK --> Answer[Business summary]
-```
-
-## What This Project Does
-
-- Exposes a root ADK agent (`myagent`) for chat-based data quality workflows
-- Routes questions to MCP tools (full analysis, metadata lookup, derived validation)
-- Normalizes and compacts tool output for lower token usage (`myagent/anomaly_to_prompt.py`)
-- Keeps explanation thin: tool selection, prioritization, concise interpretation
-
-Business rule source of truth remains in the MCP backend.
+- `retail-data-quality-agent` (this repo): ADK agent setup, tool routing, compact summarization.
+- `wfm_dq_mcp_server` (paired backend repo): MCP tools, Databricks query execution, DQ rules.
+- ADK can invoke MCP over:
+  - `stdio` (trusted local process boundary)
+  - `sse` (remote endpoint with explicit bearer auth option)
+- Business rules remain backend-owned to avoid duplicated logic in the agent layer.
 
 ## Prerequisites
 
-### For this repo (ADK agent)
+- Python 3.10+ (3.11 recommended for container/CI parity)
+- A working MCP backend checkout (`wfm_dq_mcp_server`)
+- Databricks credentials configured in the MCP backend
+- LLM credentials for ADK (Gemini/OpenAI/Anthropic/LiteLLM)
 
-- Python 3.10+
-- `google-adk` compatible environment
-- Gemini or other configured LLM credentials
-- Path to the paired MCP server script (`server.py`)
+Optional but recommended:
 
-### For the paired MCP backend repo
+- `uv` for faster dependency workflows
+- Docker Desktop (for container verification)
+- VS Code Dev Containers extension
 
-- Python 3.10+
-- Databricks SQL access
-- OAuth M2M credentials and SQL warehouse HTTP path configured in that repo’s `.env`
+## Development Setup
 
-## Quick Start (Supported Path)
+### Option 1: `uv` workflow (recommended)
+
+`pyproject.toml` is now included as the canonical tool/task configuration. `requirements.txt` remains for compatibility.
 
 ```bash
-# 1) From this repo
 python -m venv .venv
-.venv\Scripts\activate         # Windows
-# source .venv/bin/activate    # macOS/Linux
+# Windows
+.venv\Scripts\activate
+# macOS/Linux
+# source .venv/bin/activate
+
+pip install uv
+uv sync
+uv pip install -e ".[dev]"
+```
+
+### Option 2: pip workflow (fully supported)
+
+```bash
+python -m venv .venv
+# Windows
+.venv\Scripts\activate
+# macOS/Linux
+# source .venv/bin/activate
+
 pip install -r requirements.txt
+pip install poethepoet ruff pyright
+```
 
-# 2) Configure this repo
-copy .env.example .env
-# then set at minimum:
-#   LLM_PROVIDER
-#   LLM_MODEL
-#   GOOGLE_API_KEY (or provider equivalent)
-#   WFM_DQ_MCP_SERVER_PATH_FOR_ADK
-#   optional: WFM_DQ_MCP_PYTHON_FOR_ADK
+### Dev Container
 
-# 3) Launch ADK
+This repo includes `.devcontainer/devcontainer.json` for VS Code onboarding.
+
+- Reopen project in container.
+- Dependencies install automatically via `postCreateCommand`.
+- Forwarded ports: `8000` (ADK UI), `8080` (companion API).
+
+## Configuration
+
+Copy `.env.example` to `.env` and set the required values.
+
+Required for MCP-first runtime:
+
+- `LLM_PROVIDER`
+- Provider credential (`GOOGLE_API_KEY`, `OPENAI_API_KEY`, etc.)
+- `WFM_DQ_MCP_TRANSPORT_FOR_ADK` (`stdio` or `sse`)
+
+Transport-specific:
+
+- `stdio` mode:
+  - `WFM_DQ_MCP_SERVER_PATH_FOR_ADK` (absolute path to backend `server.py`)
+  - optional `WFM_DQ_MCP_PYTHON_FOR_ADK`
+- `sse` mode:
+  - `WFM_DQ_MCP_SERVER_URL_FOR_ADK` (example: `http://127.0.0.1:8000/sse`)
+  - optional `WFM_DQ_MCP_AUTH_TOKEN_FOR_ADK` (Bearer token)
+  - `WFM_DQ_MCP_REQUIRE_AUTH_FOR_SSE=true` to fail fast when token is missing
+
+Common runtime settings:
+
+- `LLM_MODEL`
+- `WFM_DQ_MCP_SERVER_TIMEOUT_FOR_ADK` (default `90`)
+- `LOG_LEVEL`, `LOG_FORMAT`
+- `SERVICE_HOST`, `SERVICE_PORT` (companion FastAPI service)
+
+Debug-only:
+
+- `MCP_STDIO_DIAGNOSTICS=true` to emit one-line stdio diagnostics to `stderr` per MCP call.
+
+## Running the Application
+
+### ADK interface (primary product path)
+
+```bash
 adk web .
 ```
 
-In ADK UI, select the `myagent` app.
+Then select app `myagent` in ADK web.
 
-## MCP Backend Setup Expectations
+Remote SSE mode is also supported when `WFM_DQ_MCP_TRANSPORT_FOR_ADK=sse`.
 
-In the paired MCP repo/folder (`wfm_dq_mcp_server`):
-
-1. Create/activate its venv
-2. Install its requirements
-3. Set its Databricks `.env` values
-4. Verify server starts:
+### Companion HTTP API (health/readiness + internal trigger)
 
 ```bash
-python server.py
+poe serve-api
 ```
 
-This repo calls that MCP server over stdio via `WFM_DQ_MCP_SERVER_PATH_FOR_ADK`.
+Exposed endpoints:
 
-## Environment Variables (This Repo)
+- `GET /health` (liveness)
+- `GET /ready` (config/readiness checks; returns `503` when not ready)
+- `POST /internal/daily-report` (internal orchestration trigger)
 
-Core MCP-first settings:
+## Health, Readiness, and Diagnostics
 
-- `LLM_PROVIDER` (default `googlegenai`)
-- `LLM_MODEL` (default `gemini-2.5-flash`)
-- `GOOGLE_API_KEY` (or equivalent provider key)
-- `WFM_DQ_MCP_SERVER_PATH_FOR_ADK` (absolute path to paired MCP `server.py`)
-- `WFM_DQ_MCP_PYTHON_FOR_ADK` (optional interpreter override)
-- `WFM_DQ_MCP_SERVER_TIMEOUT_FOR_ADK` (default 90)
-- `LOG_LEVEL`, `LOG_FORMAT`
+Local runtime doctor:
 
-See `.env.example` for the template.
+```bash
+poe doctor
+```
 
-## MCP Tool Surface (From Backend)
+Deep stdio handshake diagnostic:
 
-The agent expects these backend tools:
+```bash
+python -m tools.doctor --diagnose-mcp --timeout-seconds 60
+```
 
-- `get_available_dates` — available date range
-- `run_full_dq_analysis` — full rule execution on Databricks-backed data
-- `get_metric_info` — metric metadata/formula lookup
-- `validate_derived_metric` — targeted derived formula validation (if available)
+Readiness checks include:
 
-If a targeted tool is unavailable, the agent falls back gracefully to broad analysis.
+- LLM credential presence for selected provider
+- MCP server path configured and script file exists
 
-## Example Prompts
+## Development Tools
 
-- `Analyze data quality for 2026-05-15 with 14 day lookback.`
-- `Are any 7-day drops isolated or systemic across stores on 2026-05-10?`
-- `Show large negative outliers and separate small reversals from suspicious negatives.`
-- `Validate TEST10_TOT for Bakery on 2026-05-01 and show mismatched stores with csv value, expected value, and error percentage.`
-- `What does TEST10_TOT roll up from?`
+Task runner: `poethepoet` (`poe`).
 
-## Stdio vs SSE
+Available commands:
 
-- **Stdio** is the default and supported path for ADK in this setup.
-- **SSE** is optional in the MCP backend for remote/multi-client deployments.
+- `poe adk-web` - run ADK web UI
+- `poe serve-api` - run FastAPI companion service
+- `poe doctor` - runtime config diagnostics
+- `poe paired-check` - validate paired local prerequisites
+- `poe paired-up` - run local paired profile (SSE backend + ADK)
+- `poe paired-up-stdio` - run ADK in stdio profile
+- `poe lint` - ruff lint
+- `poe format` - ruff format
+- `poe format-check` - formatting check
+- `poe type` - pyright
+- `poe test` - pytest
+- `poe check` - lint + format-check + type + tests
 
-## Legacy Path Status
+## Testing
 
-Local CSV/CLI pipeline code is now **internal/dev-only legacy** and not the supported product path.
+Run active MCP-first test suite:
 
-Supported product path is:
+```bash
+poe test
+```
 
-`ADK web + MCP backend + Databricks SQL`.
+Current default test scope intentionally excludes quarantined legacy pipeline tests.
+
+## Paired Local Run Profile
+
+The recommended local end-to-end profile for reviewer demos is:
+
+- MCP backend in `--sse` mode
+- ADK agent in this repo using `WFM_DQ_MCP_TRANSPORT_FOR_ADK=sse`
+
+Commands:
+
+```bash
+poe paired-check
+poe paired-up
+```
+
+Behavior:
+
+- Starts backend process from `WFM_DQ_MCP_SERVER_PATH_FOR_ADK` in SSE mode.
+- Applies bind host/port from `WFM_DQ_MCP_SERVER_URL_FOR_ADK`.
+- Starts `adk web .`.
+- Terminates backend process when ADK process exits.
+
+## Security and Authentication
+
+Security boundary in this architecture:
+
+- Agent repo holds LLM credentials and backend process path.
+- MCP backend holds Databricks credentials and executes SQL.
+- `stdio` mode is a trusted local process boundary.
+- `sse` mode is a remote boundary and should be authenticated.
+
+Operational guidance:
+
+- Never commit `.env`.
+- Use separate credentials for local/dev/prod.
+- Restrict file permissions on `.env` and service account secrets.
+- In production, run MCP backend in a controlled runtime and avoid broad host-level access.
+- Treat `WFM_DQ_MCP_SERVER_PATH_FOR_ADK` as a trusted executable path; do not allow untrusted overrides.
+- For remote SSE, require bearer token auth (`WFM_DQ_MCP_REQUIRE_AUTH_FOR_SSE=true` +
+  `WFM_DQ_MCP_AUTH_TOKEN_FOR_ADK`).
+
+## Observability and Logging
+
+- FastAPI service supports `console` and `json` logging via `LOG_FORMAT`.
+- JSON logs include request correlation field `request_id`.
+- HTTP middleware propagates/generates `x-request-id` for request tracing.
+- MCP stdio diagnostics are available as an opt-in debug flag (`MCP_STDIO_DIAGNOSTICS`).
+
+## Deployment
+
+This repo includes a hardened container image:
+
+- Multi-stage Docker build
+- Non-root runtime user (`uid=10001`)
+- Container healthcheck against `/health`
+
+Build and run:
+
+```bash
+docker build -t retail-dq-agent .
+docker run --rm -p 8080:8080 --env-file .env retail-dq-agent
+```
+
+`adk web .` is generally run separately in the target environment where interactive chat is required.
+
+## Troubleshooting
+
+### MCP tool calls timing out
+
+1. Verify `WFM_DQ_MCP_SERVER_PATH_FOR_ADK` points to a valid backend `server.py`.
+2. Set `WFM_DQ_MCP_PYTHON_FOR_ADK` to backend venv Python if dependencies differ.
+3. Increase `WFM_DQ_MCP_SERVER_TIMEOUT_FOR_ADK` for cold starts.
+4. Run `python -m tools.doctor --diagnose-mcp`.
+
+### Remote SSE auth failures (`401 unauthorized`)
+
+1. Ensure backend has `WFM_DQ_MCP_REQUIRE_AUTH=true`.
+2. Ensure backend and agent share the same token value.
+3. Set `WFM_DQ_MCP_AUTH_TOKEN_FOR_ADK` in this repo.
+4. Re-run `python -m tools.doctor --diagnose-mcp`.
+
+### Readiness returns `not_ready`
+
+1. Check `/ready` response details.
+2. Ensure provider credentials match `LLM_PROVIDER`.
+3. Ensure MCP transport-specific config is present:
+   - stdio: server script path
+   - sse: server URL (and token if auth is required)
+
+### API boot fails
+
+1. Confirm `.env` is present.
+2. Run `poe doctor`.
+3. Reinstall dependencies (`uv sync` or `pip install -r requirements.txt`).
+
+## Active Surface Quality Boundary
+
+Quality gates are intentionally scoped to the active MCP-first runtime and tests.
+See `docs/QUALITY_BOUNDARY.md` for exact file coverage and rationale.
+
+## Project Structure
+
+```text
+app/                         FastAPI companion service (health/readiness/internal trigger)
+config/                      Shared settings
+myagent/                     ADK root agent, tool adapter, MCP stdio integration
+tests/                       Active MCP-first tests
+tools/                       Diagnostics and utility scripts
+_legacy/                     Internal-only legacy pipeline materials
+Dockerfile                   Production-oriented API container
+pyproject.toml               Tooling/tasks/lint/type config
+requirements.txt             Compatibility dependency install path
+```
+
+## Legacy/Internal Paths
+
+Local CSV/CLI pipeline flow is retained only for internal maintenance and is not a supported product runtime. The deployment target is MCP-first ADK plus Databricks-backed MCP backend.

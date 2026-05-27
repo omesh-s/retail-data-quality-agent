@@ -11,8 +11,9 @@ import re
 
 from dotenv import load_dotenv
 
-from myagent.anomaly_to_prompt import format_anomalies_for_llm
 from config.settings import get_settings
+from myagent.anomaly_to_prompt import format_anomalies_for_llm
+from myagent.integrations.mcp_sse_client import call_mcp_tool_sse
 from myagent.integrations.mcp_stdio_client import McpStdioError, call_mcp_tool
 
 _ISO_DATE = re.compile(r"\b(20\d{2}-\d{2}-\d{2})\b")
@@ -70,18 +71,44 @@ def _choose_mcp_tool(user_message: str) -> str:
     text = (user_message or "").lower()
     if any(k in text for k in ("roll up", "rollup", "roll-up", "formula", "component metric")):
         return "get_metric_info"
-    if any(k in text for k in ("validate", "derived", "mismatch", "expected value", "error percentage")):
+    if any(
+        k in text for k in ("validate", "derived", "mismatch", "expected value", "error percentage")
+    ):
         return "validate_derived_metric"
     return "run_full_dq_analysis"
 
 
-def _mcp_path(settings) -> str:
+def _mcp_target(settings) -> str:
+    if settings.wfm_dq_mcp_transport_for_adk == "sse":
+        if not settings.wfm_dq_mcp_server_url_for_adk:
+            raise ValueError(
+                "MCP SSE URL is not configured. "
+                "Set WFM_DQ_MCP_SERVER_URL_FOR_ADK for sse transport."
+            )
+        return settings.wfm_dq_mcp_server_url_for_adk
     path = settings.wfm_dq_mcp_server_path_for_adk
     if not path:
-        raise ValueError(
-            "MCP server path is not configured. Set WFM_DQ_MCP_SERVER_PATH_FOR_ADK."
-        )
+        raise ValueError("MCP server path is not configured. Set WFM_DQ_MCP_SERVER_PATH_FOR_ADK.")
     return path
+
+
+def _call_mcp(settings, *, tool_name: str, arguments: dict[str, object]):
+    timeout = settings.wfm_dq_mcp_server_timeout_for_adk
+    if settings.wfm_dq_mcp_transport_for_adk == "sse":
+        return call_mcp_tool_sse(
+            server_url=_mcp_target(settings),
+            tool_name=tool_name,
+            arguments=arguments,
+            timeout_seconds=timeout,
+            auth_token=settings.wfm_dq_mcp_auth_token_for_adk,
+        )
+    return call_mcp_tool(
+        server_script=_mcp_target(settings),
+        tool_name=tool_name,
+        arguments=arguments,
+        timeout_seconds=timeout,
+        python_executable=settings.wfm_dq_mcp_python_for_adk,
+    )
 
 
 def _compact_summary_payload(tool_name: str, data: dict, user_message: str) -> str:
@@ -162,7 +189,7 @@ def run_retail_data_quality_analysis(
     store_id = _extract_store_id(text)
     lookback_days = _extract_lookback_days(text) or 14
 
-    args: dict = {}
+    args: dict[str, object] = {}
     if tool_name == "get_metric_info":
         if not metric_cd:
             tool_name = "run_full_dq_analysis"
@@ -184,36 +211,20 @@ def run_retail_data_quality_analysis(
         if dept_desc:
             args["dept_desc"] = dept_desc
 
-    path = _mcp_path(s)
-    py = s.wfm_dq_mcp_python_for_adk
-    timeout = s.wfm_dq_mcp_server_timeout_for_adk
-
     try:
-        response = call_mcp_tool(
-            server_script=path,
-            tool_name=tool_name,
-            arguments=args,
-            timeout_seconds=timeout,
-            python_executable=py,
-        )
+        response = _call_mcp(s, tool_name=tool_name, arguments=args)
         if response.is_error:
             raise RuntimeError(response.content_text or "unknown MCP tool error")
         data = json.loads(response.content_text)
         return _compact_summary_payload(tool_name, data, text)
     except (McpStdioError, json.JSONDecodeError, RuntimeError):
         # Graceful fallback: broad analysis tool.
-        fallback_args = {"lookback_days": lookback_days}
+        fallback_args: dict[str, object] = {"lookback_days": lookback_days}
         if check_date:
             fallback_args["check_date"] = check_date
         if dept_desc:
             fallback_args["dept_desc"] = dept_desc
-        response = call_mcp_tool(
-            server_script=path,
-            tool_name="run_full_dq_analysis",
-            arguments=fallback_args,
-            timeout_seconds=timeout,
-            python_executable=py,
-        )
+        response = _call_mcp(s, tool_name="run_full_dq_analysis", arguments=fallback_args)
         if response.is_error:
             return f"MCP analysis failed: {response.content_text}"
         data = json.loads(response.content_text)

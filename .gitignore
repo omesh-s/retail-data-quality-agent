@@ -4,11 +4,16 @@ __pycache__/
 *.pyo
 *.pyd
 *.egg-info/
+.eggs/
+build/
+dist/
 .venv/
 venv/
 
 # Env / secrets
 .env
+.env.*
+!.env.example
 
 # OS files
 .DS_Store
@@ -20,5 +25,13 @@ Thumbs.db
 
 # Output artifacts
 output/
+.coverage
+.coverage.*
+htmlcov/
+.ruff_cache/
+.pytest_cache/
+.pyright/
+*.log
+*.tmp
 
 .cursor/

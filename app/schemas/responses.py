@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 
@@ -23,3 +25,14 @@ class MessageResponse(BaseModel):
 class ErrorResponse(BaseModel):
     error: str = Field(..., description="Short error code or label")
     detail: str | None = Field(default=None, description="Optional explanation")
+
+
+class ReadinessCheck(BaseModel):
+    name: str
+    status: Literal["ok", "fail"]
+    detail: str
+
+
+class ReadinessResponse(BaseModel):
+    status: Literal["ready", "not_ready"]
+    checks: list[ReadinessCheck]

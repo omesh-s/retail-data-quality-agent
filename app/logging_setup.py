@@ -6,11 +6,11 @@ import json
 import logging
 import logging.config
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 import yaml
 
+from app.request_context import get_request_id
 from config.settings import get_settings
 
 
@@ -23,10 +23,19 @@ class JsonLogFormatter(logging.Formatter):
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),
+            "request_id": getattr(record, "request_id", "-"),
         }
         if record.exc_info:
             payload["exc_info"] = self.formatException(record.exc_info)
         return json.dumps(payload, default=str)
+
+
+class RequestContextFilter(logging.Filter):
+    """Inject request_id into log records for correlation."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.request_id = get_request_id()
+        return True
 
 
 # Configure root logger from settings (dictConfig file if set, else stream + level).
@@ -41,12 +50,13 @@ def configure_logging() -> None:
     root = logging.getLogger()
     root.handlers.clear()
     handler = logging.StreamHandler()
+    handler.addFilter(RequestContextFilter())
     if settings.log_format == "json":
         handler.setFormatter(JsonLogFormatter())
     else:
         handler.setFormatter(
             logging.Formatter(
-                fmt="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+                fmt="%(asctime)s [%(levelname)s] %(name)s [req=%(request_id)s]: %(message)s",
                 datefmt="%Y-%m-%dT%H:%M:%S",
             )
         )

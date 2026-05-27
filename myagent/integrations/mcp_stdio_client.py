@@ -1,21 +1,24 @@
-"""Lightweight synchronous MCP stdio client for single tool calls.
+"""Synchronous MCP stdio client for single tool calls.
 
-Spawns an MCP server as a subprocess, performs the JSON-RPC initialize
-handshake, calls one tool, and shuts down.  Used by the ``mcp_server``
-data source mode in ``pipeline_run.py``.
+Uses the official MCP Python client/session implementation for protocol
+correctness (initialize + tools/call framing) and wraps it in a small
+sync API used by the ADK adapter.
 """
 
 from __future__ import annotations
 
-import json
+import asyncio
 import logging
 import os
-import subprocess
 import sys
-import threading
+import tempfile
 from dataclasses import dataclass
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
+
+from mcp import ClientSession
+from mcp.client.stdio import StdioServerParameters, stdio_client
 
 logger = logging.getLogger(__name__)
 
@@ -32,66 +35,67 @@ class McpToolResult:
     is_error: bool = False
 
 
-# ---------------------------------------------------------------------------
-# Wire helpers (Content-Length framed JSON-RPC over stdin/stdout)
-# ---------------------------------------------------------------------------
-
-def _write_msg(proc: subprocess.Popen, msg: dict) -> None:
-    body = json.dumps(msg).encode("utf-8")
-    frame = f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body
-    proc.stdin.write(frame)
-    proc.stdin.flush()
-
-
-def _read_msg(proc: subprocess.Popen) -> dict:
-    buf = b""
-    while b"\r\n\r\n" not in buf and b"\n\n" not in buf:
-        ch = proc.stdout.read(1)
-        if not ch:
-            raise McpStdioError("MCP server closed stdout unexpectedly")
-        buf += ch
-
-    if b"\r\n\r\n" in buf:
-        header_raw, _sep, _rest = buf.partition(b"\r\n\r\n")
-    else:
-        header_raw, _sep, _rest = buf.partition(b"\n\n")
-
-    length: int | None = None
-    header_text = header_raw.decode("ascii").replace("\r\n", "\n")
-    for line in header_text.split("\n"):
-        if line.lower().startswith("content-length:"):
-            length = int(line.split(":", 1)[1].strip())
-            break
-    if length is None or length <= 0:
-        raise McpStdioError(f"No Content-Length in header: {buf!r}")
-
-    body = proc.stdout.read(length)
-    if len(body) != length:
-        raise McpStdioError(f"Short read: expected {length} bytes, got {len(body)}")
-    return json.loads(body)
+def _flatten_tool_text(content: list[Any]) -> str:
+    texts: list[str] = []
+    for part in content or []:
+        if isinstance(part, dict):
+            if part.get("type") == "text":
+                texts.append(str(part.get("text", "")))
+            continue
+        text_attr = getattr(part, "text", None)
+        if text_attr is not None:
+            texts.append(str(text_attr))
+    return "\n".join(t for t in texts if t)
 
 
-def _read_response(proc: subprocess.Popen, request_id: int) -> dict:
-    """Read messages until we get a JSON-RPC response matching *request_id*."""
-    while True:
-        msg = _read_msg(proc)
-        if "id" in msg and msg["id"] == request_id:
-            return msg
+async def _call_mcp_tool_async(
+    *,
+    command: str,
+    script: Path,
+    tool_name: str,
+    arguments: dict[str, Any],
+    timeout_seconds: float,
+    errlog_path: Path,
+) -> McpToolResult:
+    params = StdioServerParameters(
+        command=command,
+        args=[str(script)],
+        cwd=str(script.parent),
+        env={**os.environ},
+    )
+    with errlog_path.open("w", encoding="utf-8") as errlog:
+        async with stdio_client(params, errlog=errlog) as (read_stream, write_stream):
+            async with ClientSession(read_stream, write_stream) as session:
+                await asyncio.wait_for(
+                    session.initialize(),
+                    timeout=timeout_seconds,
+                )
+                call_result = await asyncio.wait_for(
+                    session.call_tool(
+                        tool_name,
+                        arguments,
+                        read_timeout_seconds=timedelta(seconds=timeout_seconds),
+                    ),
+                    timeout=timeout_seconds,
+                )
+    return McpToolResult(
+        content_text=_flatten_tool_text(getattr(call_result, "content", [])),
+        is_error=bool(getattr(call_result, "isError", False)),
+    )
 
 
-def _drain_stderr(proc: subprocess.Popen) -> str:
-    """Best-effort stderr capture after an error (non-blocking)."""
+def _stderr_tail(errlog_path: Path, *, max_chars: int = 1200) -> str:
     try:
-        proc.kill()
-        _, err = proc.communicate(timeout=3)
-        return err.decode("utf-8", errors="replace")[:500].strip()
-    except Exception:
+        text = errlog_path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
         return ""
+    return text[-max_chars:] if len(text) > max_chars else text
 
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
 
 def call_mcp_tool(
     server_script: str | Path,
@@ -101,106 +105,99 @@ def call_mcp_tool(
     timeout_seconds: float = 120.0,
     python_executable: str | None = None,
 ) -> McpToolResult:
-    """Spawn an MCP server, call one tool, return the result, then shut down.
+    """Spawn an MCP server and call one tool via stdio.
 
-    The server runs with its parent directory as CWD so it can load its own
-    ``.env`` and sibling modules.
-
-    Raises :class:`McpStdioError` on communication failure, timeout, or a
-    JSON-RPC error response from the server.
+    Process startup details:
+    - command: `python_executable` if provided, else `sys.executable`
+    - args: absolute `server_script` path
+    - cwd: parent directory of `server_script`
     """
     script = Path(server_script).resolve()
     if not script.is_file():
         raise McpStdioError(f"MCP server script not found: {script}")
 
-    cmd = [python_executable or sys.executable, str(script)]
-    logger.info("MCP stdio: starting %s (cwd=%s)", cmd, script.parent)
-
-    proc = subprocess.Popen(
-        cmd,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        cwd=str(script.parent),
-        env={**os.environ},
-    )
-
-    timed_out = threading.Event()
-
-    def _kill() -> None:
-        timed_out.set()
-        proc.kill()
-
-    timer = threading.Timer(timeout_seconds, _kill)
-    timer.start()
-
-    try:
-        # 1) Initialize handshake
-        _write_msg(proc, {
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "initialize",
-            "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "retail-dq-agent", "version": "1.0.0"},
-            },
-        })
-        _read_response(proc, 1)
-
-        # 2) Initialized notification (no response expected)
-        _write_msg(proc, {"jsonrpc": "2.0", "method": "notifications/initialized"})
-
-        # 3) Tool call
-        _write_msg(proc, {
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/call",
-            "params": {"name": tool_name, "arguments": arguments},
-        })
-        resp = _read_response(proc, 2)
-
-        if "error" in resp:
-            err = resp["error"]
-            msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
-            raise McpStdioError(f"MCP server error: {msg}")
-
-        result = resp.get("result", {})
-        texts = [
-            p.get("text", "")
-            for p in result.get("content", [])
-            if isinstance(p, dict) and p.get("type") == "text"
-        ]
-
-        return McpToolResult(
-            content_text="\n".join(texts),
-            is_error=result.get("isError", False),
+    command = python_executable or sys.executable
+    diagnostics_enabled = os.getenv("MCP_STDIO_DIAGNOSTICS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+    if diagnostics_enabled:
+        sys.stderr.write(
+            f"[MCP STDIO] tool={tool_name} cmd={[command, str(script)]} "
+            f"cwd={script.parent} timeout={timeout_seconds}s\n"
         )
-
-    except Exception as exc:
-        if timed_out.is_set():
-            raise McpStdioError(
-                f"MCP tool call timed out after {timeout_seconds}s"
-            ) from exc
-
-        stderr_text = _drain_stderr(proc)
-        if isinstance(exc, McpStdioError):
-            if stderr_text:
-                raise McpStdioError(
-                    f"{exc}\nServer stderr: {stderr_text}"
-                ) from exc.__cause__
-            raise
+    logger.info(
+        "MCP stdio call: command=%s script=%s cwd=%s tool=%s timeout=%ss",
+        command,
+        script,
+        script.parent,
+        tool_name,
+        timeout_seconds,
+    )
+    errlog = Path(tempfile.gettempdir()) / f"mcp_stdio_{os.getpid()}_{tool_name}.log"
+    try:
+        return asyncio.run(
+            _call_mcp_tool_async(
+                command=command,
+                script=script,
+                tool_name=tool_name,
+                arguments=arguments,
+                timeout_seconds=timeout_seconds,
+                errlog_path=errlog,
+            )
+        )
+    except asyncio.TimeoutError as exc:
+        stderr = _stderr_tail(errlog)
         raise McpStdioError(
-            f"MCP stdio failed: {exc}"
-            + (f"\nServer stderr: {stderr_text}" if stderr_text else "")
+            "MCP stdio timeout during initialize/tool call. "
+            f"tool={tool_name} timeout={timeout_seconds}s "
+            f"command={command} script={script} cwd={script.parent}"
+            + (f"\nServer stderr tail:\n{stderr}" if stderr else "")
+        ) from exc
+    except Exception as exc:
+        stderr = _stderr_tail(errlog)
+        raise McpStdioError(
+            "MCP stdio call failed. "
+            f"tool={tool_name} command={command} script={script} cwd={script.parent} "
+            f"error={type(exc).__name__}: {exc}"
+            + (f"\nServer stderr tail:\n{stderr}" if stderr else "")
         ) from exc
 
-    finally:
-        timer.cancel()
-        if proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait(timeout=3)
+
+def diagnose_mcp_stdio_call(
+    server_script: str | Path,
+    *,
+    python_executable: str | None = None,
+    timeout_seconds: float = 120.0,
+) -> dict[str, Any]:
+    """Diagnostic helper for stdio handshake and simple tool call."""
+    script = Path(server_script).resolve()
+    command = python_executable or sys.executable
+    errlog = Path(tempfile.gettempdir()) / f"mcp_stdio_diag_{os.getpid()}.log"
+    result: dict[str, Any] = {
+        "command": command,
+        "script": str(script),
+        "cwd": str(script.parent),
+        "timeout_seconds": timeout_seconds,
+    }
+    try:
+        tool_result = asyncio.run(
+            _call_mcp_tool_async(
+                command=command,
+                script=script,
+                tool_name="get_metric_info",
+                arguments={"metric_cd": "TEST10_TOT"},
+                timeout_seconds=timeout_seconds,
+                errlog_path=errlog,
+            )
+        )
+        result["ok"] = True
+        result["is_error"] = tool_result.is_error
+        result["content_preview"] = tool_result.content_text[:500]
+    except Exception as exc:
+        result["ok"] = False
+        result["error"] = f"{type(exc).__name__}: {exc}"
+    result["stderr_tail"] = _stderr_tail(errlog)
+    return result

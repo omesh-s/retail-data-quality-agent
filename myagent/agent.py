@@ -1,4 +1,4 @@
-# ADK root agent: Gemini + retail pipeline tool + optional external MCP toolset.
+# ADK root agent for MCP-first retail data quality workflows.
 #
 # ADK discovery
 # -------------
@@ -10,7 +10,7 @@
 # Tools registered
 # ----------------
 # 1. FunctionTool(run_retail_data_quality_analysis) — always present.
-#    Runs the local anomaly pipeline (local CSV or configured data source).
+#    MCP-backed adapter that routes to backend tools and returns compact context.
 #
 # 2. McpToolset (external DQ MCP server) — present only when
 #    ``WFM_DQ_MCP_SERVER_PATH_FOR_ADK`` is set and the script exists.
@@ -24,7 +24,10 @@
 # Configuration
 # -------------
 # ``LLM_MODEL``                         → Gemini model for the agent
-# ``WFM_DQ_MCP_SERVER_PATH_FOR_ADK``    → path to MCP server script (optional)
+# ``WFM_DQ_MCP_TRANSPORT_FOR_ADK``      → stdio (local) or sse (remote)
+# ``WFM_DQ_MCP_SERVER_PATH_FOR_ADK``    → path to MCP server script for stdio mode
+# ``WFM_DQ_MCP_SERVER_URL_FOR_ADK``     → MCP SSE endpoint for remote mode
+# ``WFM_DQ_MCP_AUTH_TOKEN_FOR_ADK``     → optional bearer token for remote SSE mode
 # ``WFM_DQ_MCP_PYTHON_FOR_ADK``         → Python interpreter for the MCP server
 #                                          (auto-detects venv in server dir if unset)
 # ``WFM_DQ_MCP_SERVER_TIMEOUT_FOR_ADK`` → stdio connection timeout (default 90s)
@@ -32,16 +35,17 @@
 from __future__ import annotations
 
 import logging
-import platform
 import sys
 from pathlib import Path
 
 from google.adk.agents import Agent
 from google.adk.tools.function_tool import FunctionTool
 
+from app.logging_setup import configure_logging
 from config.settings import get_settings
 from myagent.retail_tool import run_retail_data_quality_analysis
 
+configure_logging()
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -110,30 +114,58 @@ def _resolve_mcp_python(server_dir: Path, explicit: str | None) -> str:
 
 
 def _build_mcp_toolset():
-    """Create an McpToolset for the WFM DQ MCP server, or None if not configured."""
+    """Create an McpToolset for WFM DQ MCP server (stdio or sse)."""
     try:
         settings = get_settings()
+        transport = settings.wfm_dq_mcp_transport_for_adk
+        timeout = settings.wfm_dq_mcp_server_timeout_for_adk
+
+        from google.adk.tools.mcp_tool.mcp_toolset import McpToolset
+
+        if transport == "sse":
+            server_url = settings.wfm_dq_mcp_server_url_for_adk
+            if not server_url:
+                logger.warning(
+                    "WFM_DQ_MCP_TRANSPORT_FOR_ADK=sse but WFM_DQ_MCP_SERVER_URL_FOR_ADK is not "
+                    "set; MCP toolset disabled."
+                )
+                return None
+            headers = None
+            if settings.wfm_dq_mcp_auth_token_for_adk:
+                headers = {"Authorization": f"Bearer {settings.wfm_dq_mcp_auth_token_for_adk}"}
+
+            from google.adk.tools.mcp_tool.mcp_toolset import SseConnectionParams
+
+            toolset = McpToolset(
+                connection_params=SseConnectionParams(
+                    url=server_url,
+                    headers=headers,
+                    timeout=timeout,
+                    sse_read_timeout=timeout,
+                )
+            )
+            logger.info(
+                "ADK MCP toolset created (sse): url=%s auth=%s timeout=%ss",
+                server_url,
+                "enabled" if headers else "disabled",
+                timeout,
+            )
+            return toolset
+
         mcp_path = settings.wfm_dq_mcp_server_path_for_adk
         if not mcp_path:
             logger.debug("WFM_DQ_MCP_SERVER_PATH_FOR_ADK not set; MCP toolset disabled")
             return None
-
         script = Path(mcp_path).resolve()
         if not script.is_file():
             logger.warning(
-                "WFM_DQ_MCP_SERVER_PATH_FOR_ADK=%s does not exist; "
-                "ADK will run without MCP tools.",
+                "WFM_DQ_MCP_SERVER_PATH_FOR_ADK=%s does not exist; ADK will run without MCP tools.",
                 mcp_path,
             )
             return None
-
-        python_cmd = _resolve_mcp_python(
-            script.parent, settings.wfm_dq_mcp_python_for_adk
-        )
-        timeout = settings.wfm_dq_mcp_server_timeout_for_adk
+        python_cmd = _resolve_mcp_python(script.parent, settings.wfm_dq_mcp_python_for_adk)
 
         from google.adk.tools.mcp_tool.mcp_toolset import (
-            McpToolset,
             StdioConnectionParams,
             StdioServerParameters,
         )
@@ -149,7 +181,7 @@ def _build_mcp_toolset():
             ),
         )
         logger.info(
-            "ADK MCP toolset created: script=%s python=%s timeout=%ss",
+            "ADK MCP toolset created (stdio): script=%s python=%s timeout=%ss",
             script,
             python_cmd,
             timeout,
@@ -158,8 +190,7 @@ def _build_mcp_toolset():
 
     except Exception as exc:
         logger.warning(
-            "Failed to configure MCP toolset for ADK (%s: %s); "
-            "running with pipeline tool only.",
+            "Failed to configure MCP toolset for ADK (%s: %s); running with pipeline tool only.",
             type(exc).__name__,
             exc,
             exc_info=True,
@@ -168,7 +199,7 @@ def _build_mcp_toolset():
 
 
 def _build_tools() -> list:
-    """Assemble the agent's tool list: pipeline FunctionTool + optional MCP toolset."""
+    """Assemble tool list: MCP-backed FunctionTool + optional direct MCP toolset."""
     tools: list = [FunctionTool(run_retail_data_quality_analysis)]
     mcp = _build_mcp_toolset()
     if mcp is not None:
@@ -290,7 +321,10 @@ def _build_instruction() -> str:
     """Build agent instruction, appending MCP guidance if MCP tools are configured."""
     try:
         settings = get_settings()
-        if settings.wfm_dq_mcp_server_path_for_adk:
+        if settings.wfm_dq_mcp_transport_for_adk == "sse":
+            if settings.wfm_dq_mcp_server_url_for_adk:
+                return _BASE_INSTRUCTION + _MCP_INSTRUCTION_ADDENDUM
+        elif settings.wfm_dq_mcp_server_path_for_adk:
             script = Path(settings.wfm_dq_mcp_server_path_for_adk)
             if script.exists():
                 return _BASE_INSTRUCTION + _MCP_INSTRUCTION_ADDENDUM

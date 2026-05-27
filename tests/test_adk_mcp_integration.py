@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from config.settings import Settings
-
 
 # ---------------------------------------------------------------------------
 # Graceful fallback when MCP is not configured
@@ -23,7 +19,6 @@ class TestMcpNotConfigured:
             wfm_dq_mcp_server_path_for_adk=None,
             llm_provider="googlegenai",
             google_api_key="test-key",
-            daily_report_default_send_slack=False,
         )
         with patch("myagent.agent.get_settings", return_value=settings):
             from myagent.agent import _build_mcp_toolset
@@ -35,7 +30,6 @@ class TestMcpNotConfigured:
             wfm_dq_mcp_server_path_for_adk=str(tmp_path / "nonexistent.py"),
             llm_provider="googlegenai",
             google_api_key="test-key",
-            daily_report_default_send_slack=False,
         )
         with patch("myagent.agent.get_settings", return_value=settings):
             from myagent.agent import _build_mcp_toolset
@@ -47,7 +41,6 @@ class TestMcpNotConfigured:
             wfm_dq_mcp_server_path_for_adk=None,
             llm_provider="googlegenai",
             google_api_key="test-key",
-            daily_report_default_send_slack=False,
         )
         with patch("myagent.agent.get_settings", return_value=settings):
             from myagent.agent import _build_tools
@@ -75,7 +68,6 @@ class TestMcpConfigured:
             wfm_dq_mcp_server_timeout_for_adk=15.0,
             llm_provider="googlegenai",
             google_api_key="test-key",
-            daily_report_default_send_slack=False,
         )
 
         mock_toolset = MagicMock()
@@ -89,8 +81,8 @@ class TestMcpConfigured:
                     "google.adk.tools.mcp_tool.mcp_toolset": MagicMock(
                         McpToolset=mock_cls,
                         StdioConnectionParams=MagicMock(),
+                        StdioServerParameters=MagicMock(),
                     ),
-                    "mcp": MagicMock(StdioServerParameters=MagicMock()),
                 },
             ):
                 from myagent.agent import _build_mcp_toolset
@@ -107,7 +99,6 @@ class TestMcpConfigured:
             wfm_dq_mcp_server_path_for_adk=str(fake_script),
             llm_provider="googlegenai",
             google_api_key="test-key",
-            daily_report_default_send_slack=False,
         )
 
         mock_toolset = MagicMock()
@@ -122,6 +113,34 @@ class TestMcpConfigured:
         assert tools[0].__class__.__name__ == "FunctionTool"
         assert tools[1] is mock_toolset
 
+    @patch("myagent.agent.McpToolset", create=True)
+    def test_build_mcp_toolset_creates_sse_toolset(self, mock_cls):
+        settings = Settings(
+            wfm_dq_mcp_transport_for_adk="sse",
+            wfm_dq_mcp_server_url_for_adk="http://127.0.0.1:8000/sse",
+            wfm_dq_mcp_auth_token_for_adk="token-123",
+            wfm_dq_mcp_server_timeout_for_adk=15.0,
+            llm_provider="googlegenai",
+            google_api_key="test-key",
+        )
+        mock_toolset = MagicMock()
+        mock_cls.return_value = mock_toolset
+        with patch("myagent.agent.get_settings", return_value=settings):
+            with patch.dict(
+                "sys.modules",
+                {
+                    "google.adk.tools.mcp_tool.mcp_toolset": MagicMock(
+                        McpToolset=mock_cls,
+                        SseConnectionParams=MagicMock(),
+                    ),
+                },
+            ):
+                from myagent.agent import _build_mcp_toolset
+
+                result = _build_mcp_toolset()
+
+        assert result is mock_toolset
+
 
 # ---------------------------------------------------------------------------
 # Instruction text
@@ -134,7 +153,6 @@ class TestInstruction:
             wfm_dq_mcp_server_path_for_adk=None,
             llm_provider="googlegenai",
             google_api_key="test-key",
-            daily_report_default_send_slack=False,
         )
         with patch("myagent.agent.get_settings", return_value=settings):
             from myagent.agent import _build_instruction
@@ -151,7 +169,6 @@ class TestInstruction:
             wfm_dq_mcp_server_path_for_adk=str(fake_script),
             llm_provider="googlegenai",
             google_api_key="test-key",
-            daily_report_default_send_slack=False,
         )
         with patch("myagent.agent.get_settings", return_value=settings):
             from myagent.agent import _build_instruction

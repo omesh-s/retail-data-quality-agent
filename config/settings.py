@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import AliasChoices, Field, field_validator
@@ -10,6 +11,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 LlmProvider = Literal["googlegenai", "openai", "anthropic", "litellm"]
 LogFormat = Literal["console", "json"]
+McpTransport = Literal["stdio", "sse"]
 
 
 class Settings(BaseSettings):
@@ -60,15 +62,41 @@ class Settings(BaseSettings):
     )
     wfm_dq_mcp_python_for_adk: str | None = Field(
         default=None,
-        validation_alias=AliasChoices(
-            "WFM_DQ_MCP_PYTHON_FOR_ADK", "wfm_dq_mcp_python_for_adk"
-        ),
+        validation_alias=AliasChoices("WFM_DQ_MCP_PYTHON_FOR_ADK", "wfm_dq_mcp_python_for_adk"),
     )
     wfm_dq_mcp_server_timeout_for_adk: float = Field(
         default=90.0,
         validation_alias=AliasChoices(
             "WFM_DQ_MCP_SERVER_TIMEOUT_FOR_ADK",
             "wfm_dq_mcp_server_timeout_for_adk",
+        ),
+    )
+    wfm_dq_mcp_transport_for_adk: McpTransport = Field(
+        default="stdio",
+        validation_alias=AliasChoices(
+            "WFM_DQ_MCP_TRANSPORT_FOR_ADK",
+            "wfm_dq_mcp_transport_for_adk",
+        ),
+    )
+    wfm_dq_mcp_server_url_for_adk: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "WFM_DQ_MCP_SERVER_URL_FOR_ADK",
+            "wfm_dq_mcp_server_url_for_adk",
+        ),
+    )
+    wfm_dq_mcp_auth_token_for_adk: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "WFM_DQ_MCP_AUTH_TOKEN_FOR_ADK",
+            "wfm_dq_mcp_auth_token_for_adk",
+        ),
+    )
+    wfm_dq_mcp_require_auth_for_sse: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "WFM_DQ_MCP_REQUIRE_AUTH_FOR_SSE",
+            "wfm_dq_mcp_require_auth_for_sse",
         ),
     )
 
@@ -81,6 +109,20 @@ class Settings(BaseSettings):
         default="console",
         validation_alias=AliasChoices("LOG_FORMAT", "log_format"),
     )
+    log_config_file: Path | None = Field(
+        default=None,
+        validation_alias=AliasChoices("LOG_CONFIG_FILE", "log_config_file"),
+    )
+
+    # --- Companion HTTP service ---
+    service_host: str = Field(
+        default="127.0.0.1",
+        validation_alias=AliasChoices("SERVICE_HOST", "service_host"),
+    )
+    service_port: int = Field(
+        default=8080,
+        validation_alias=AliasChoices("SERVICE_PORT", "service_port"),
+    )
 
     @field_validator(
         "google_api_key",
@@ -90,6 +132,9 @@ class Settings(BaseSettings):
         "litellm_api_key",
         "wfm_dq_mcp_server_path_for_adk",
         "wfm_dq_mcp_python_for_adk",
+        "wfm_dq_mcp_server_url_for_adk",
+        "wfm_dq_mcp_auth_token_for_adk",
+        "log_config_file",
         mode="before",
     )
     @classmethod
@@ -116,6 +161,31 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "LLM_PROVIDER=litellm requires LITELLM_API_KEY and/or LITELLM_API_BASE."
                 )
+
+    def validate_mcp_runtime(self) -> None:
+        """Raise ValueError when MCP runtime settings are invalid."""
+        if self.wfm_dq_mcp_transport_for_adk == "stdio":
+            if not self.wfm_dq_mcp_server_path_for_adk:
+                raise ValueError(
+                    "WFM_DQ_MCP_SERVER_PATH_FOR_ADK must be set when "
+                    "WFM_DQ_MCP_TRANSPORT_FOR_ADK=stdio."
+                )
+            script = Path(self.wfm_dq_mcp_server_path_for_adk).expanduser()
+            if not script.is_file():
+                raise ValueError(
+                    f"WFM_DQ_MCP_SERVER_PATH_FOR_ADK does not point to an existing file: {script}"
+                )
+            return
+
+        if not self.wfm_dq_mcp_server_url_for_adk:
+            raise ValueError(
+                "WFM_DQ_MCP_SERVER_URL_FOR_ADK must be set when WFM_DQ_MCP_TRANSPORT_FOR_ADK=sse."
+            )
+        if self.wfm_dq_mcp_require_auth_for_sse and not self.wfm_dq_mcp_auth_token_for_adk:
+            raise ValueError(
+                "WFM_DQ_MCP_AUTH_TOKEN_FOR_ADK must be set when "
+                "WFM_DQ_MCP_REQUIRE_AUTH_FOR_SSE=true."
+            )
 
 
 @lru_cache

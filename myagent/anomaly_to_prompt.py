@@ -19,6 +19,7 @@ _SEV_RANK = {"High": 0, "Medium": 1, "Low": 2}
 # Field accessors — normalize across local-pipeline and MCP shapes
 # ---------------------------------------------------------------------------
 
+
 def _store(rec: dict):
     return rec.get("store_id") or rec.get("storeid")
 
@@ -54,6 +55,7 @@ def _issue(rec: dict) -> str:
 # Public API
 # ---------------------------------------------------------------------------
 
+
 def format_anomalies_for_llm(anomalies: list[dict]) -> str:
     """Serialize anomalies into a compact, grouped prompt block.
 
@@ -87,10 +89,7 @@ def format_anomalies_for_llm_by_issue(
     """
     if issue_filter:
         key = issue_filter.lower()
-        filtered = [
-            a for a in anomalies
-            if key in _issue(a).lower()
-        ]
+        filtered = [a for a in anomalies if key in _issue(a).lower()]
         if not filtered:
             return f"No {issue_filter} anomalies found."
         return format_anomalies_for_llm(filtered)
@@ -102,10 +101,9 @@ def format_anomalies_for_llm_by_issue(
 # continuity_scope fields)
 # ---------------------------------------------------------------------------
 
+
 def _scope_header(anomalies: list[dict]) -> str:
     """Build a one-line scope summary if the data supports it."""
-    first = anomalies[0] if anomalies else {}
-
     # Check if any anomaly has MCP-style scope_summary at the response level
     # (would be passed down by the caller). Absent = skip.
     scopes = [a.get("continuity_scope") for a in anomalies if a.get("continuity_scope")]
@@ -128,6 +126,7 @@ def _scope_header(anomalies: list[dict]) -> str:
 # Body formatting
 # ---------------------------------------------------------------------------
 
+
 def _format_body(anomalies: list[dict]) -> str:
     """Render compact bullet lines grouped by store/dept."""
     by_group: dict[tuple, list[dict]] = defaultdict(list)
@@ -135,11 +134,12 @@ def _format_body(anomalies: list[dict]) -> str:
         by_group[(_store(rec), _dept(rec))].append(rec)
 
     lines: list[str] = []
-    for (store, dept), group in sorted(
-        by_group.items(), key=lambda kv: _priority(kv[1][0])
-    ):
+    for (store, dept), group in sorted(by_group.items(), key=lambda kv: _priority(kv[1][0])):
         sev = Counter(_severity(r) for r in group)
-        header = f"Store {store} / {dept}: {sev.get('High', 0)}H {sev.get('Medium', 0)}M {sev.get('Low', 0)}L"
+        header = (
+            f"Store {store} / {dept}: "
+            f"{sev.get('High', 0)}H {sev.get('Medium', 0)}M {sev.get('Low', 0)}L"
+        )
         lines.append(header)
 
         for rec in sorted(group, key=_priority):

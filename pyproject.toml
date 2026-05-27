@@ -1,0 +1,66 @@
+[project]
+name = "retail-data-quality-agent"
+version = "0.1.0"
+description = "MCP-first ADK orchestration layer for retail data quality workflows"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "google-adk",
+  "litellm",
+  "python-dotenv",
+  "google-genai",
+  "pandas",
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.32.0",
+  "pydantic-settings>=2.0.0",
+  "pyyaml>=6.0.1",
+  "requests>=2.31.0",
+  "pytest>=8.0.0",
+  "questionary>=2.0.0",
+  "pyarrow>=14.0.0",
+  "mcp>=1.6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "poethepoet>=0.30.0",
+  "ruff>=0.6.0",
+  "pyright>=1.1.390",
+]
+
+[tool.poe.tasks]
+serve-api = "uvicorn app.main:app --host 127.0.0.1 --port 8080 --reload"
+adk-web = "adk web ."
+doctor = "python -m tools.doctor"
+paired-check = "python -m tools.paired_run check"
+paired-up = "python -m tools.paired_run up --transport sse"
+paired-up-stdio = "python -m tools.paired_run up --transport stdio"
+lint = "ruff check app config/settings.py myagent/__init__.py myagent/agent.py myagent/retail_tool.py myagent/anomaly_to_prompt.py myagent/integrations/mcp_stdio_client.py myagent/integrations/mcp_sse_client.py tools/doctor.py tools/paired_run.py tests/test_adk_mcp_integration.py tests/test_retail_tool.py tests/test_anomaly_to_prompt.py tests/test_settings.py tests/test_mcp_stdio_client.py tests/test_mcp_sse_client.py tests/test_service_health.py"
+format = "ruff format app config/settings.py myagent/__init__.py myagent/agent.py myagent/retail_tool.py myagent/anomaly_to_prompt.py myagent/integrations/mcp_stdio_client.py myagent/integrations/mcp_sse_client.py tools/doctor.py tools/paired_run.py tests/test_adk_mcp_integration.py tests/test_retail_tool.py tests/test_anomaly_to_prompt.py tests/test_settings.py tests/test_mcp_stdio_client.py tests/test_mcp_sse_client.py tests/test_service_health.py"
+format-check = "ruff format app config/settings.py myagent/__init__.py myagent/agent.py myagent/retail_tool.py myagent/anomaly_to_prompt.py myagent/integrations/mcp_stdio_client.py myagent/integrations/mcp_sse_client.py tools/doctor.py tools/paired_run.py tests/test_adk_mcp_integration.py tests/test_retail_tool.py tests/test_anomaly_to_prompt.py tests/test_settings.py tests/test_mcp_stdio_client.py tests/test_mcp_sse_client.py tests/test_service_health.py --check"
+type = "pyright app/main.py app/logging_setup.py app/request_context.py app/api/routes/health.py app/schemas/responses.py config/settings.py myagent/__init__.py myagent/agent.py myagent/retail_tool.py myagent/anomaly_to_prompt.py myagent/integrations/mcp_stdio_client.py myagent/integrations/mcp_sse_client.py tools/doctor.py tools/paired_run.py tests/test_adk_mcp_integration.py tests/test_retail_tool.py tests/test_anomaly_to_prompt.py tests/test_settings.py tests/test_mcp_stdio_client.py tests/test_mcp_sse_client.py tests/test_service_health.py"
+test = "pytest"
+check = ["lint", "format-check", "type", "test"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = [
+  ".venv",
+  "_legacy",
+  "__pycache__",
+]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+
+[tool.pyright]
+pythonVersion = "3.10"
+typeCheckingMode = "basic"
+venvPath = "."
+venv = ".venv"
+include = ["app", "config/settings.py", "myagent", "tools", "tests"]
+exclude = [".venv", "_legacy", "__pycache__"]
+reportMissingImports = false
+reportMissingTypeStubs = false
+reportPrivateImportUsage = false

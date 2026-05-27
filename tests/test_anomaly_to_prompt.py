@@ -7,7 +7,6 @@ from myagent.anomaly_to_prompt import (
     format_anomalies_for_llm_by_issue,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixtures: MCP-style (rich fields) and local-pipeline-style (legacy fields)
 # ---------------------------------------------------------------------------
@@ -239,8 +238,8 @@ class TestPriorityOrdering:
         lines = result.strip().split("\n")
         # Derived mismatch has priority -50, systemic has -30, small neg has 100
         # So derived should appear before small neg
-        derived_line = next(i for i, l in enumerate(lines) if "TEST10_TOT" in l)
-        neg_line = next(i for i, l in enumerate(lines) if "BKY_3A_UN" in l)
+        derived_line = next(i for i, line in enumerate(lines) if "TEST10_TOT" in line)
+        neg_line = next(i for i, line in enumerate(lines) if "BKY_3A_UN" in line)
         assert derived_line < neg_line
 
     def test_local_pipeline_falls_back_to_severity(self):
@@ -248,8 +247,8 @@ class TestPriorityOrdering:
         low = {**_LOCAL_PIPELINE_GAP, "severity": "Low"}
         result = format_anomalies_for_llm([low, high])
         lines = result.strip().split("\n")
-        high_idx = next(i for i, l in enumerate(lines) if "MKT_SAT_UN" in l)
-        low_idx = next(i for i, l in enumerate(lines) if "BKY_3A_UN" in l)
+        high_idx = next(i for i, line in enumerate(lines) if "MKT_SAT_UN" in line)
+        low_idx = next(i for i, line in enumerate(lines) if "BKY_3A_UN" in line)
         assert high_idx < low_idx
 
 
@@ -304,7 +303,7 @@ class TestCompactness:
             _MCP_DERIVED_MISMATCH,
         ]
         result = format_anomalies_for_llm(recs)
-        lines = [l for l in result.strip().split("\n") if l.strip()]
+        lines = [line for line in result.strip().split("\n") if line.strip()]
         # 5 anomalies across 4 store/dept groups + headers + scope header
         # should be roughly 10-15 lines, not 50+
         assert len(lines) <= 20
