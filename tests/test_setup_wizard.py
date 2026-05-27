@@ -1,8 +1,9 @@
-"""Setup wizard helpers and validation."""
+"""Setup wizard helpers, validation, and mode flow tests."""
 
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -20,6 +21,16 @@ from config.wizard_validation import (
     validate_webhook_url,
 )
 from config.env_file import merge_env_file, parse_env_file
+from config.setup_wizard import (
+    MODE_ADK_LOCAL,
+    MODE_ADK_MCP,
+    MODE_DEVELOPER,
+    MODE_CHOICES,
+    _auto_detect_mcp_python,
+)
+
+
+# ── LLM preset tests (unchanged) ────────────────────────────────────────────
 
 
 def test_provider_only_model_names_are_suspicious():
@@ -61,6 +72,9 @@ def test_pick_model_rejects_suspicious_custom():
     assert calls["n"] >= 2
 
 
+# ── Defaults and validation ──────────────────────────────────────────────────
+
+
 def test_advanced_defaults_when_skipped():
     assert PIPELINE_ADVANCED_DEFAULTS["RETAIL_HISTORY_DAYS"] == "30"
     assert PIPELINE_ADVANCED_DEFAULTS["RETAIL_Z_THRESHOLD"] == "4.0"
@@ -93,3 +107,31 @@ def test_merge_env_writes_llm_keys(tmp_path):
     parsed = parse_env_file(env)
     assert parsed["LLM_PROVIDER"] == "litellm"
     assert "claude" in parsed["LLM_MODEL"]
+
+
+# ── Mode constants ───────────────────────────────────────────────────────────
+
+
+def test_mode_choices_cover_three_modes():
+    keys = [key for _, key in MODE_CHOICES]
+    assert MODE_ADK_LOCAL in keys
+    assert MODE_ADK_MCP in keys
+    assert MODE_DEVELOPER in keys
+    assert len(keys) == 3
+
+
+# ── MCP venv auto-detection ──────────────────────────────────────────────────
+
+
+def test_auto_detect_mcp_python_finds_venv(tmp_path):
+    venv_dir = tmp_path / ".venv" / "Scripts"
+    venv_dir.mkdir(parents=True)
+    py = venv_dir / "python.exe"
+    py.write_text("fake")
+    result = _auto_detect_mcp_python(tmp_path)
+    assert result is not None
+    assert "python" in result.lower()
+
+
+def test_auto_detect_mcp_python_returns_none_when_missing(tmp_path):
+    assert _auto_detect_mcp_python(tmp_path) is None

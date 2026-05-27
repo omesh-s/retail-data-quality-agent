@@ -111,15 +111,11 @@ def save_raw_anomalies(
     return json_path, csv_path
 
 
-# Full user message for the LLM: date + instructions + formatted anomaly block.
 def build_user_prompt(as_of: str, anomaly_block: str) -> str:
-    return (
-        f"Daily retail data quality review for {as_of}.\n\n"
-        "Structured anomaly input follows. Severities, impact scores, and business "
-        "hints are **already computed**—explain them; do not replace them with your "
-        "own guesses.\n\n"
-        f"{anomaly_block}"
-    )
+    """Build the LLM user prompt. Tiny for zero anomalies, compact otherwise."""
+    if "No anomalies" in anomaly_block:
+        return f"DQ review {as_of}: no anomalies detected."
+    return f"DQ review {as_of}. Severities/scores are pre-computed.\n\n{anomaly_block}"
 
 
 # Return value of run_detection_pipeline.
@@ -137,6 +133,37 @@ class PipelineResult:
     as_of: pd.Timestamp
     # as_of as YYYY-MM-DD.
     as_of_str: str
+
+
+def build_result_from_preanalyzed_anomalies(
+    anomalies: list[dict],
+    *,
+    as_of_str: str,
+    top_n: int | None = None,
+    save_exports: bool = True,
+    output_dir: str | Path | None = None,
+) -> PipelineResult:
+    """Build a PipelineResult from pre-analyzed anomalies (MCP server mode).
+
+    Skips detection and enrichment — anomalies are already complete.
+    Applies top-N filtering, LLM formatting, and optional export.
+    """
+    out_dir = Path(output_dir) if output_dir is not None else OUTPUT_DIR
+    if save_exports:
+        save_raw_anomalies(anomalies, as_of_str, out_dir)
+
+    for_llm = apply_top_n_per_store_dept(anomalies, top_n)
+    formatted_block = format_anomalies_for_llm(for_llm)
+    prompt = build_user_prompt(as_of_str, formatted_block)
+
+    return PipelineResult(
+        anomalies=anomalies,
+        anomalies_for_llm=for_llm,
+        formatted_anomaly_block=formatted_block,
+        formatted_prompt=prompt,
+        as_of=pd.Timestamp(as_of_str).normalize(),
+        as_of_str=as_of_str,
+    )
 
 
 def run_detection_pipeline_from_dataframe(

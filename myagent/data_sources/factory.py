@@ -8,9 +8,9 @@ from config.settings import Settings, get_settings
 from myagent.data_sources.databricks_mcp import DatabricksMcpMetricsSource
 from myagent.data_sources.local_csv import LocalCsvMetricsSource
 
-DataSourceKind = Literal["local_csv", "databricks_mcp"]
+DataSourceKind = Literal["local_csv", "databricks_mcp", "mcp_server"]
 
-_SUPPORTED: tuple[DataSourceKind, ...] = ("local_csv", "databricks_mcp")
+_SUPPORTED: tuple[str, ...] = ("local_csv", "databricks_mcp")
 
 
 def get_metrics_data_source(

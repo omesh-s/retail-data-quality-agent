@@ -1,198 +1,135 @@
-# Retail Data Quality Agent
+# Retail Data Quality Agent (MCP-First)
 
-Monitors daily retail store metrics with **deterministic pandas rules**, enriches findings with severity scores, and optionally summarizes via **LLM** (CLI/ADK) or **Slack** (daily report). One shared provider-backed pipeline powers every entry point.
+This repository is the **ADK agent layer** for retail data quality analysis.
 
-**What it does**
+The analysis backend is an **external MCP server** that queries Databricks SQL and applies the business rules.
 
-- Shared anomaly pipeline (`myagent/pipeline.py`) — detectors, enrichment, exports
-- CLI + ADK web — same `run_anomaly_pipeline()` backend
-- Daily report + optional **Slack** incoming webhook (no LLM)
-- Optional FastAPI companion (`/health`, daily-report trigger)
-- Data sources: **`local_csv`** (default) or **`databricks_mcp`** (HTTP JSON-RPC client)
-
-**Requirements:** Python 3.11+ (tested on 3.13). Run `python setup_wizard.py` for guided setup (or copy `.env.example` → `.env`). Gemini/Google credentials for `run_day.py` and `adk web` when `LLM_PROVIDER=googlegenai`.
-
-## Quick start
-
-**Windows**
+Primary product path:
 
 ```bash
+adk web .
+```
+
+## Paired Architecture
+
+- **This repo** (`retail-data-quality-agent`) = ADK orchestration + concise business summarization
+- **MCP server repo/folder** (`wfm_dq_mcp_server`) = Databricks-backed API/backend logic
+
+```mermaid
+flowchart LR
+  User[User] --> ADK[ADK Agent (this repo)]
+  ADK --> MCP[MCP Server (paired backend repo)]
+  MCP --> DB[Databricks SQL]
+  DB --> MCP
+  MCP --> ADK
+  ADK --> Answer[Business summary]
+```
+
+## What This Project Does
+
+- Exposes a root ADK agent (`myagent`) for chat-based data quality workflows
+- Routes questions to MCP tools (full analysis, metadata lookup, derived validation)
+- Normalizes and compacts tool output for lower token usage (`myagent/anomaly_to_prompt.py`)
+- Keeps explanation thin: tool selection, prioritization, concise interpretation
+
+Business rule source of truth remains in the MCP backend.
+
+## Prerequisites
+
+### For this repo (ADK agent)
+
+- Python 3.10+
+- `google-adk` compatible environment
+- Gemini or other configured LLM credentials
+- Path to the paired MCP server script (`server.py`)
+
+### For the paired MCP backend repo
+
+- Python 3.10+
+- Databricks SQL access
+- OAuth M2M credentials and SQL warehouse HTTP path configured in that repo’s `.env`
+
+## Quick Start (Supported Path)
+
+```bash
+# 1) From this repo
 python -m venv .venv
-.venv\Scripts\activate
+.venv\Scripts\activate         # Windows
+# source .venv/bin/activate    # macOS/Linux
 pip install -r requirements.txt
+
+# 2) Configure this repo
 copy .env.example .env
-python setup_wizard.py
-```
+# then set at minimum:
+#   LLM_PROVIDER
+#   LLM_MODEL
+#   GOOGLE_API_KEY (or provider equivalent)
+#   WFM_DQ_MCP_SERVER_PATH_FOR_ADK
+#   optional: WFM_DQ_MCP_PYTHON_FOR_ADK
 
-**macOS / Linux**
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-python setup_wizard.py
-```
-
-```bash
-python evaluate.py
-pytest tests -q
-python run_daily_report.py --date 2024-05-20 --no-send-slack
-python run_day.py --date 2024-05-20 --grain-min-avg 100 --top-n 5
+# 3) Launch ADK
 adk web .
 ```
 
-| Command | Notes |
-|---------|--------|
-| `setup_wizard.py` | Guided `.env` setup (curated models, optional advanced settings) |
-| `evaluate.py` | 13/13 detector scenarios; no LLM unless `--with-llm` |
-| `pytest tests -q` | Unit tests (`pytest.ini` adds repo root to path) |
-| `run_daily_report.py` | Pipeline + report; optional Slack; **no Gemini** |
-| `run_day.py` | Pipeline + LLM summary; writes `output/raw_anomalies_<date>.*` |
-| `adk web .` | Chat UI (`:8000`); same live pipeline as CLI |
+In ADK UI, select the `myagent` app.
 
-## Setup wizard
+## MCP Backend Setup Expectations
 
-`python setup_wizard.py` — guided **basic** setup; advanced pipeline tuning is optional.
+In the paired MCP repo/folder (`wfm_dq_mcp_server`):
 
-| Step | What you configure |
-|------|-------------------|
-| LLM | Provider → **curated model list** (or custom). LiteLLM asks provider family, then routed model presets. |
-| Data | Sample CSV if present, or Databricks MCP |
-| Slack | Off by default; webhook validated when enabled |
-| Scheduler | Off by default; timezone accepts IANA or aliases (CST → `America/Chicago`) |
-| Advanced | Skipped by default (30d history, z=4.0, grain distinct=3, report top-N=10) |
-
-- **ADK web** remains Google GenAI / Gemini; other providers mainly affect `run_day.py`.
-- **Gemini:** Google GenAI → `gemini-2.5-flash` → `GOOGLE_API_KEY`.
-- **LiteLLM → Claude:** LiteLLM → Anthropic / Claude → `anthropic/claude-3-5-sonnet-20241022`.
-- Edit `.env` later for advanced keys without re-running the wizard.
-- **Scheduler timezone:** type `America/Chicago`, `CST`, `Central`, or `Chicago` — saved as canonical IANA (e.g. `America/Chicago`).
-
-## How to use it
-
-| Entry point | Command | Purpose |
-|-------------|---------|---------|
-| **CLI (LLM)** | `python run_day.py --date 2024-05-20` | Detect → export → summary (`googlegenai` uses ADK; others use `myagent/llm`) |
-| **Daily report** | `python run_daily_report.py --date 2024-05-20` | Detect → top issues → Slack per config/flags |
-| **Scheduler** | `python schedule_daily_report.py --once` | Cron-friendly single run; `--loop` for local daily time |
-| **ADK web** | `adk web .` | Browser chat; tool runs real pipeline |
-| **HTTP API** | `uvicorn app.main:app --host 127.0.0.1 --port 8080` | `GET /health`, `POST /internal/daily-report` |
-
-**Common flags:** `--csv` forces `local_csv`; `--source` overrides `RETAIL_DATA_SOURCE`; `--send-slack` / `--no-send-slack` override Slack for that run.
-
-Artifacts: `output/raw_anomalies_<YYYY-MM-DD>.json` and `.csv`.
-
-## Architecture
-
-`run_anomaly_pipeline()` (`myagent/orchestration/pipeline_run.py`) resolves a data source → `fetch_metrics()` → schema normalization → `run_detection_pipeline_from_dataframe()`. LLM and Slack are outside the detector core.
-
-```text
-  data source (local_csv / databricks_mcp)
-           │ fetch_metrics → normalize (aliases)
-           ▼
-  history window → rule detectors → enrich_anomalies
-           │
-     ┌─────┴─────┬─────────────┐
-     ▼           ▼             ▼
-  exports   daily report    LLM prompt
-            + Slack         (run_day / ADK)
-```
-
-## Data sources
-
-| Provider | `RETAIL_DATA_SOURCE` | Notes |
-|----------|----------------------|--------|
-| Local CSV / Parquet | `local_csv` | `RETAIL_METRICS_CSV` or sample `data/retail_data_quality_sim.csv` |
-| Databricks MCP | `databricks_mcp` | **MCP client** over HTTP JSON-RPC `tools/call` (not a bundled MCP server) |
-
-**Local**
+1. Create/activate its venv
+2. Install its requirements
+3. Set its Databricks `.env` values
+4. Verify server starts:
 
 ```bash
-RETAIL_DATA_SOURCE=local_csv
-RETAIL_METRICS_CSV=data/retail_data_quality_sim.csv
+python server.py
 ```
 
-**Databricks MCP** — env-driven client in `myagent/integrations/databricks_mcp_client.py`:
+This repo calls that MCP server over stdio via `WFM_DQ_MCP_SERVER_PATH_FOR_ADK`.
 
-```bash
-RETAIL_DATA_SOURCE=databricks_mcp
-DATABRICKS_MCP_SERVER_URL=https://your-host/mcp
-DATABRICKS_METRICS_CATALOG=retail
-DATABRICKS_METRICS_SCHEMA=metrics
-DATABRICKS_METRICS_TABLE=daily_store_metrics
-```
+## Environment Variables (This Repo)
 
-**Column aliases:** variant names (`store_id`, `business_date`, …) map via `config/schema_aliases.py`. Optional `DATA_SCHEMA_MAP_FILE` JSON override. Large files: optional `DATA_READ_CHUNK_SIZE`, `DATA_USE_PYARROW=true`, Parquet supported.
+Core MCP-first settings:
 
-## Slack
+- `LLM_PROVIDER` (default `googlegenai`)
+- `LLM_MODEL` (default `gemini-2.5-flash`)
+- `GOOGLE_API_KEY` (or equivalent provider key)
+- `WFM_DQ_MCP_SERVER_PATH_FOR_ADK` (absolute path to paired MCP `server.py`)
+- `WFM_DQ_MCP_PYTHON_FOR_ADK` (optional interpreter override)
+- `WFM_DQ_MCP_SERVER_TIMEOUT_FOR_ADK` (default 90)
+- `LOG_LEVEL`, `LOG_FORMAT`
 
-Incoming webhook for **daily report only** — not an interactive Slack bot.
+See `.env.example` for the template.
 
-```bash
-SLACK_ENABLED=true
-SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
-DAILY_REPORT_DEFAULT_SEND_SLACK=true   # auto-send when webhook set
-python run_daily_report.py --date 2024-05-20 --send-slack
-python tools/test_slack.py
-```
+## MCP Tool Surface (From Backend)
 
-**Local schedule:** `DAILY_REPORT_ENABLED=true`, then `python schedule_daily_report.py --loop`. Production: cron or Cloud Scheduler calling `--once` or the HTTP endpoint.
+The agent expects these backend tools:
 
-## ADK web
+- `get_available_dates` — available date range
+- `run_full_dq_analysis` — full rule execution on Databricks-backed data
+- `get_metric_info` — metric metadata/formula lookup
+- `validate_derived_metric` — targeted derived formula validation (if available)
 
-```bash
-adk web .
-```
+If a targeted tool is unavailable, the agent falls back gracefully to broad analysis.
 
-Select **`myagent`**. Example: *“Analyze retail data quality for 2024-05-20 and summarize severe anomalies by store and department.”*
+## Example Prompts
 
-Uses tool **`run_retail_data_quality_analysis`** (live pipeline, not canned data). Requires `LLM_PROVIDER=googlegenai` and Google credentials. Model from `LLM_MODEL` (default `gemini-2.5-flash`).
+- `Analyze data quality for 2026-05-15 with 14 day lookback.`
+- `Are any 7-day drops isolated or systemic across stores on 2026-05-10?`
+- `Show large negative outliers and separate small reversals from suspicious negatives.`
+- `Validate TEST10_TOT for Bakery on 2026-05-01 and show mismatched stores with csv value, expected value, and error percentage.`
+- `What does TEST10_TOT roll up from?`
 
-## HTTP API
+## Stdio vs SSE
 
-Optional sidecar — does not host ADK chat.
+- **Stdio** is the default and supported path for ADK in this setup.
+- **SSE** is optional in the MCP backend for remote/multi-client deployments.
 
-```bash
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8080
-curl -s http://127.0.0.1:8080/health
-curl -s -X POST "http://127.0.0.1:8080/internal/daily-report?as_of_date=2024-05-20&send_slack=false"
-```
+## Legacy Path Status
 
-## LLM providers
+Local CSV/CLI pipeline code is now **internal/dev-only legacy** and not the supported product path.
 
-| `LLM_PROVIDER` | Used by | Credentials |
-|----------------|---------|-------------|
-| `googlegenai` (default) | `run_day.py`, `adk web` | `GOOGLE_API_KEY` |
-| `openai` | `run_day.py` (direct API) | `OPENAI_API_KEY` |
-| `anthropic` | `run_day.py` (direct API) | `ANTHROPIC_API_KEY` |
-| `litellm` | `run_day.py` (via litellm) | `LITELLM_API_KEY` / `LITELLM_API_BASE` |
+Supported product path is:
 
-ADK web remains on the Google ADK path today.
-
-## Testing
-
-```bash
-python evaluate.py
-python evaluate.py --with-llm
-pytest tests -q
-```
-
-## Project layout
-
-| Path | Role |
-|------|------|
-| `myagent/pipeline.py` | Core detectors + enrichment |
-| `myagent/orchestration/pipeline_run.py` | `run_anomaly_pipeline()` |
-| `myagent/data_sources/` | `local_csv`, `databricks_mcp` |
-| `config/settings.py` | Typed env settings |
-| `config/schema_aliases.py` | Column alias normalization |
-| `config/setup_wizard.py` | Wizard logic; `setup_wizard.py` entry point |
-| `config/wizard_llm.py` | LLM model presets and validation |
-| `schedule_daily_report.py` | Daily run / local loop |
-| `run_day.py` / `run_daily_report.py` | CLIs |
-| `tools/test_slack.py` | Webhook smoke test |
-| `app/main.py` | FastAPI companion |
-| `.env.example` | Config template |
-
-**Migration:** Slack auto-send when `send_slack` is omitted now follows `SLACK_ENABLED` **or** `DAILY_REPORT_DEFAULT_SEND_SLACK` (plus webhook). Use `--no-send-slack` to force off.
+`ADK web + MCP backend + Databricks SQL`.

@@ -10,12 +10,9 @@ from config.settings import Settings
 def test_defaults_local_csv():
     s = Settings(
         llm_provider="googlegenai",
-        retail_data_source="local_csv",
-        daily_report_default_send_slack=False,
-        slack_enabled=False,
     )
-    assert s.retail_data_source == "local_csv"
     assert s.llm_provider == "googlegenai"
+    assert s.log_format in ("console", "json")
 
 
 def test_validate_llm_openai_requires_key():
@@ -24,12 +21,9 @@ def test_validate_llm_openai_requires_key():
         s.validate_llm_credentials()
 
 
-def test_slack_auto_send_flags():
+def test_mcp_settings_defaults():
     s = Settings(
-        slack_webhook_url="https://hooks.slack.com/x",
-        daily_report_default_send_slack=True,
-        slack_enabled=False,
+        wfm_dq_mcp_server_path_for_adk="C:/tmp/server.py",
     )
-    from myagent.orchestration.daily_report import resolve_send_slack
-
-    assert resolve_send_slack(s, None) is True
+    assert s.wfm_dq_mcp_server_path_for_adk == "C:/tmp/server.py"
+    assert s.wfm_dq_mcp_server_timeout_for_adk == 90.0

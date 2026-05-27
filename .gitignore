@@ -20,3 +20,5 @@ Thumbs.db
 
 # Output artifacts
 output/
+
+.cursor/

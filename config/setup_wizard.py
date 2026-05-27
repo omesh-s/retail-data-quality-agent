@@ -1,16 +1,16 @@
-"""Interactive terminal setup for .env configuration."""
+"""Interactive terminal setup for .env configuration — ADK-first."""
 
 from __future__ import annotations
 
 import argparse
+import platform
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from config.env_file import mask_secret, merge_env_file, parse_env_file
 from config.wizard_defaults import (
     PIPELINE_ADVANCED_DEFAULTS,
-    PIPELINE_ADVANCED_OPTIONAL_KEYS,
     SAMPLE_CSV_RELATIVE,
 )
 from config.wizard_llm import (
@@ -33,16 +33,34 @@ from config.wizard_validation import (
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_ENV_PATH = PROJECT_ROOT / ".env"
 
+# ── Usage modes ──────────────────────────────────────────────────────────────
+
+MODE_ADK_LOCAL = "adk_local"
+MODE_ADK_MCP = "adk_mcp"
+MODE_DEVELOPER = "developer"
+
+MODE_CHOICES: list[tuple[str, str]] = [
+    ("ADK web with local sample data (quickstart)", MODE_ADK_LOCAL),
+    ("ADK web with external MCP server (Databricks)", MODE_ADK_MCP),
+    ("Developer / advanced setup", MODE_DEVELOPER),
+]
+
 
 @dataclass
 class WizardSummary:
+    mode: str
     llm_provider_label: str
     llm_model: str
     data_source_label: str
-    slack_enabled: bool
-    scheduler_enabled: bool
-    advanced_customized: bool
-    env_path: Path
+    mcp_adk_enabled: bool = False
+    slack_enabled: bool = False
+    scheduler_enabled: bool = False
+    advanced_customized: bool = False
+    env_path: Path = DEFAULT_ENV_PATH
+    extra_notes: list[str] = field(default_factory=list)
+
+
+# ── UI helpers ───────────────────────────────────────────────────────────────
 
 
 def _prompt(text: str, default: str = "") -> str:
@@ -93,17 +111,20 @@ def _print_note(msg: str) -> None:
     print(f"  → {msg}")
 
 
+# ── LLM setup (shared by all modes) ─────────────────────────────────────────
+
+
 def _configure_llm(existing: dict[str, str]) -> tuple[dict[str, str], str, str]:
     """Return env updates, display provider label, and model string."""
     updates: dict[str, str] = {}
-    print("\n── LLM for summaries ──")
+    print("\n── Step 1: LLM ──")
     _print_note(
-        "ADK web chat stays on Google GenAI / Gemini. Other providers mainly affect "
-        "run_day.py when LLM_PROVIDER is not googlegenai."
+        "ADK web uses Google GenAI (Gemini) by default. "
+        "Other providers affect CLI tools (run_day.py)."
     )
 
     provider_labels = [label for label, _ in PROVIDER_CHOICES]
-    provider_label = _select("How should run_day.py generate summaries?", provider_labels)
+    provider_label = _select("LLM provider", provider_labels)
     provider_key = dict(PROVIDER_CHOICES)[provider_label]
     updates["LLM_PROVIDER"] = provider_key
 
@@ -171,16 +192,171 @@ def _collect_direct_api_key(
         print("  Please enter a key or confirm skip.")
 
 
-def _configure_data_source(existing: dict[str, str]) -> tuple[dict[str, str], str]:
-    print("\n── Metrics data source ──")
-    ds_label = _select("Where do daily metrics come from?", ["Local CSV file", "Databricks MCP"])
+# ── Mode selection ───────────────────────────────────────────────────────────
+
+
+def _choose_mode() -> str:
+    print("\n── Step 2: Usage mode ──")
+    labels = [label for label, _ in MODE_CHOICES]
+    label = _select("How will you primarily use this agent?", labels)
+    return dict(MODE_CHOICES)[label]
+
+
+# ── Mode A: ADK + local CSV ─────────────────────────────────────────────────
+
+
+def _configure_adk_local(existing: dict[str, str]) -> tuple[dict[str, str], WizardSummary]:
+    print("\n── ADK + local sample data ──")
+    updates: dict[str, str] = {"RETAIL_DATA_SOURCE": "local_csv"}
+    updates.update(PIPELINE_ADVANCED_DEFAULTS)
+
+    sample = PROJECT_ROOT / SAMPLE_CSV_RELATIVE
+    default_csv = existing.get("RETAIL_METRICS_CSV") or (
+        SAMPLE_CSV_RELATIVE if sample.is_file() else ""
+    )
+    csv_path = _prompt("Path to sample CSV", default_csv)
+    if csv_path:
+        updates["RETAIL_METRICS_CSV"] = csv_path
+        full = PROJECT_ROOT / csv_path
+        if not full.is_file():
+            _print_note(f"Warning: {full} not found — you can fix this in .env later.")
+
+    summary = WizardSummary(
+        mode=MODE_ADK_LOCAL,
+        llm_provider_label="",
+        llm_model="",
+        data_source_label="Local CSV",
+    )
+    return updates, summary
+
+
+# ── Mode B: ADK + MCP server ────────────────────────────────────────────────
+
+_VENV_SUBDIRS_WIN = (".venv", "Scripts", "python.exe")
+_VENV_SUBDIRS_UNIX = (".venv", "bin", "python")
+
+
+def _auto_detect_mcp_python(server_dir: Path) -> str | None:
+    """Find a venv Python in the MCP server directory."""
+    for parts in [_VENV_SUBDIRS_WIN, _VENV_SUBDIRS_UNIX]:
+        candidate = server_dir.joinpath(*parts)
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def _configure_adk_mcp(existing: dict[str, str]) -> tuple[dict[str, str], WizardSummary]:
+    print("\n── ADK + external MCP server ──")
+    _print_note(
+        "The MCP server is a separate project (not vendored into this repo). "
+        "ADK spawns it via stdio and exposes its tools alongside the local pipeline."
+    )
+    _print_note(
+        "Databricks credentials belong in the MCP server's own .env, not here."
+    )
+
+    updates: dict[str, str] = {"RETAIL_DATA_SOURCE": "local_csv"}
+    updates.update(PIPELINE_ADVANCED_DEFAULTS)
+    notes: list[str] = []
+
+    default_path = existing.get("WFM_DQ_MCP_SERVER_PATH_FOR_ADK", "")
+    while True:
+        mcp_path = _prompt("Path to MCP server script (server.py)", default_path)
+        if not mcp_path:
+            _print_note("No path provided — MCP tools will be disabled in ADK.")
+            break
+
+        resolved = Path(mcp_path).resolve()
+        if resolved.is_file():
+            updates["WFM_DQ_MCP_SERVER_PATH_FOR_ADK"] = str(resolved)
+
+            detected_py = _auto_detect_mcp_python(resolved.parent)
+            if detected_py:
+                _print_note(f"Auto-detected MCP server venv: {detected_py}")
+                updates["WFM_DQ_MCP_PYTHON_FOR_ADK"] = detected_py
+            else:
+                _print_note(
+                    "No venv found in the MCP server directory. "
+                    "If the server has its own dependencies, set "
+                    "WFM_DQ_MCP_PYTHON_FOR_ADK in .env to the correct Python path."
+                )
+                notes.append(
+                    "Set WFM_DQ_MCP_PYTHON_FOR_ADK if MCP server needs a separate Python"
+                )
+
+            sample = PROJECT_ROOT / SAMPLE_CSV_RELATIVE
+            if sample.is_file():
+                updates["RETAIL_METRICS_CSV"] = SAMPLE_CSV_RELATIVE
+            break
+        else:
+            print(f"  File not found: {resolved}")
+            if _confirm("Skip MCP setup for now? (ADK will work with local pipeline only)", default=True):
+                notes.append("MCP path not configured — ADK runs without MCP tools")
+                break
+
+    summary = WizardSummary(
+        mode=MODE_ADK_MCP,
+        llm_provider_label="",
+        llm_model="",
+        data_source_label="MCP server (ADK toolset)",
+        mcp_adk_enabled="WFM_DQ_MCP_SERVER_PATH_FOR_ADK" in updates,
+        extra_notes=notes,
+    )
+    return updates, summary
+
+
+# ── Mode C: Developer / advanced ─────────────────────────────────────────────
+
+
+def _configure_developer(existing: dict[str, str]) -> tuple[dict[str, str], WizardSummary]:
+    """Full advanced wizard — exposes all pipeline, Slack, scheduler, and MCP settings."""
     updates: dict[str, str] = {}
+    notes: list[str] = []
+
+    ds_updates, ds_label = _configure_data_source(existing)
+    updates.update(ds_updates)
+
+    mcp_adk_on = False
+    if _confirm("\nEnable MCP tools in ADK web? (requires external MCP server)", default=False):
+        mcp_updates, mcp_adk_on = _configure_adk_mcp_for_dev(existing)
+        updates.update(mcp_updates)
+
+    slack_updates, slack_on = _configure_slack(existing)
+    updates.update(slack_updates)
+
+    sched_updates, sched_on = _configure_scheduler(existing)
+    updates.update(sched_updates)
+
+    adv_updates, adv_custom = _configure_advanced(existing)
+    updates.update(adv_updates)
+
+    summary = WizardSummary(
+        mode=MODE_DEVELOPER,
+        llm_provider_label="",
+        llm_model="",
+        data_source_label=ds_label,
+        mcp_adk_enabled=mcp_adk_on,
+        slack_enabled=slack_on,
+        scheduler_enabled=sched_on,
+        advanced_customized=adv_custom,
+        extra_notes=notes,
+    )
+    return updates, summary
+
+
+def _configure_data_source(existing: dict[str, str]) -> tuple[dict[str, str], str]:
+    print("\n── Pipeline data source ──")
+    ds_label = _select(
+        "Where do daily metrics come from?",
+        ["Local CSV file", "MCP server (stdio)", "Databricks MCP (HTTP)"],
+    )
+    updates: dict[str, str] = {}
+
     if ds_label == "Local CSV file":
         updates["RETAIL_DATA_SOURCE"] = "local_csv"
         sample = PROJECT_ROOT / SAMPLE_CSV_RELATIVE
-        default_csv = (
-            existing.get("RETAIL_METRICS_CSV")
-            or (SAMPLE_CSV_RELATIVE if sample.is_file() else "")
+        default_csv = existing.get("RETAIL_METRICS_CSV") or (
+            SAMPLE_CSV_RELATIVE if sample.is_file() else ""
         )
         while True:
             csv_path = _prompt("Path to metrics CSV", default_csv)
@@ -193,6 +369,19 @@ def _configure_data_source(existing: dict[str, str]) -> tuple[dict[str, str], st
                 continue
             updates["RETAIL_METRICS_CSV"] = csv_path
             break
+
+    elif ds_label == "MCP server (stdio)":
+        updates["RETAIL_DATA_SOURCE"] = "mcp_server"
+        default_server = existing.get("WFM_DQ_MCP_SERVER_PATH", "")
+        path = _prompt("WFM_DQ_MCP_SERVER_PATH (path to server.py)", default_server)
+        if path:
+            updates["WFM_DQ_MCP_SERVER_PATH"] = path
+        timeout = _prompt(
+            "WFM_DQ_MCP_TIMEOUT_SECONDS",
+            existing.get("WFM_DQ_MCP_TIMEOUT_SECONDS", "120"),
+        )
+        updates["WFM_DQ_MCP_TIMEOUT_SECONDS"] = timeout
+
     else:
         updates["RETAIL_DATA_SOURCE"] = "databricks_mcp"
         updates["DATABRICKS_MCP_SERVER_URL"] = _prompt(
@@ -226,7 +415,36 @@ def _configure_data_source(existing: dict[str, str]) -> tuple[dict[str, str], st
                 "DATABRICKS_METRICS_TABLE",
                 existing.get("DATABRICKS_METRICS_TABLE", "daily_store_metrics"),
             )
+
     return updates, ds_label
+
+
+def _configure_adk_mcp_for_dev(existing: dict[str, str]) -> tuple[dict[str, str], bool]:
+    """Ask for ADK MCP settings in developer mode (compact)."""
+    updates: dict[str, str] = {}
+    default_path = existing.get("WFM_DQ_MCP_SERVER_PATH_FOR_ADK", "")
+    mcp_path = _prompt("WFM_DQ_MCP_SERVER_PATH_FOR_ADK", default_path)
+    if not mcp_path:
+        return updates, False
+
+    resolved = Path(mcp_path).resolve()
+    if not resolved.is_file():
+        _print_note(f"Warning: {resolved} not found. ADK will skip MCP tools at runtime.")
+
+    updates["WFM_DQ_MCP_SERVER_PATH_FOR_ADK"] = str(resolved)
+
+    detected_py = _auto_detect_mcp_python(resolved.parent)
+    if detected_py:
+        _print_note(f"Auto-detected MCP venv Python: {detected_py}")
+        updates["WFM_DQ_MCP_PYTHON_FOR_ADK"] = detected_py
+    else:
+        py_path = _prompt(
+            "WFM_DQ_MCP_PYTHON_FOR_ADK (optional — Python for MCP server)",
+            existing.get("WFM_DQ_MCP_PYTHON_FOR_ADK", ""),
+        )
+        if py_path:
+            updates["WFM_DQ_MCP_PYTHON_FOR_ADK"] = py_path
+    return updates, True
 
 
 def _configure_slack(existing: dict[str, str]) -> tuple[dict[str, str], bool]:
@@ -303,8 +521,7 @@ def _configure_advanced(existing: dict[str, str]) -> tuple[dict[str, str], bool]
     print("\n── Advanced pipeline settings (optional) ──")
     _print_note("You can change these later in .env without re-running the wizard.")
     if not _confirm("Configure advanced anomaly pipeline settings now?", default=False):
-        updates = dict(PIPELINE_ADVANCED_DEFAULTS)
-        return updates, False
+        return dict(PIPELINE_ADVANCED_DEFAULTS), False
 
     updates: dict[str, str] = {}
     updates["RETAIL_HISTORY_DAYS"] = _prompt(
@@ -331,20 +548,41 @@ def _configure_advanced(existing: dict[str, str]) -> tuple[dict[str, str], bool]
     return updates, True
 
 
+# ── Summary / confirmation ───────────────────────────────────────────────────
+
+_MODE_LABELS = {
+    MODE_ADK_LOCAL: "ADK web + local CSV",
+    MODE_ADK_MCP: "ADK web + MCP server",
+    MODE_DEVELOPER: "Developer / advanced",
+}
+
+
 def _print_confirmation(summary: WizardSummary, updates: dict[str, str]) -> None:
+    mode_label = _MODE_LABELS.get(summary.mode, summary.mode)
     print("\n" + "=" * 60)
     print("Setup complete")
     print("=" * 60)
     print(f"  Config file:     {summary.env_path}")
+    print(f"  Mode:            {mode_label}")
     print(f"  LLM:             {summary.llm_provider_label}")
     print(f"  Model:           {summary.llm_model}")
     print(f"  Data source:     {summary.data_source_label}")
-    print(f"  Slack:           {'enabled' if summary.slack_enabled else 'disabled'}")
-    print(f"  Scheduler:       {'enabled' if summary.scheduler_enabled else 'disabled'}")
-    print(
-        f"  Pipeline tuning: "
-        f"{'customized' if summary.advanced_customized else 'defaults (30d history, z=4.0, grain distinct=3)'}"
-    )
+
+    if summary.mode == MODE_ADK_MCP or summary.mcp_adk_enabled:
+        print(f"  MCP in ADK:      {'enabled' if summary.mcp_adk_enabled else 'disabled'}")
+    if summary.mode == MODE_DEVELOPER:
+        print(f"  Slack:           {'enabled' if summary.slack_enabled else 'disabled'}")
+        print(f"  Scheduler:       {'enabled' if summary.scheduler_enabled else 'disabled'}")
+        print(
+            f"  Pipeline tuning: "
+            f"{'customized' if summary.advanced_customized else 'defaults'}"
+        )
+
+    if summary.extra_notes:
+        print("\n  Notes:")
+        for note in summary.extra_notes:
+            print(f"    • {note}")
+
     print("\n  Environment keys written:")
     for key in sorted(updates):
         val = updates[key] or ""
@@ -352,13 +590,17 @@ def _print_confirmation(summary: WizardSummary, updates: dict[str, str]) -> None
             print(f"    {key}={mask_secret(val)}")
         else:
             print(f"    {key}={val}")
-    print("\n  Next commands:")
-    print("    python evaluate.py")
-    print("    python run_day.py --date 2024-05-20")
-    print("    python run_daily_report.py --date 2024-05-20 --send-slack")
-    print("    python schedule_daily_report.py --once")
-    print("    adk web .")
+
+    print("\n  Next steps:")
+    print("    adk web .                  # launch ADK chat UI")
+    if summary.mode == MODE_DEVELOPER:
+        print("    python run_day.py --date 2024-05-20")
+        print("    python evaluate.py")
+        print("    pytest tests -q")
     print("=" * 60)
+
+
+# ── Main entry point ─────────────────────────────────────────────────────────
 
 
 def run_wizard(env_path: Path = DEFAULT_ENV_PATH, *, interactive: bool = True) -> int:
@@ -367,37 +609,34 @@ def run_wizard(env_path: Path = DEFAULT_ENV_PATH, *, interactive: bool = True) -
         return 1
 
     print("Retail Data Quality Agent — setup wizard")
-    print("Basic setup: LLM, data source, Slack, scheduler. Advanced pipeline settings are optional.\n")
+    print("Configure your environment for ADK web, CLI, or both.\n")
 
     existing = parse_env_file(env_path)
     updates: dict[str, str | None] = {}
 
+    # Step 1: LLM (all modes)
     llm_updates, provider_label, model = _configure_llm(existing)
     updates.update(llm_updates)
 
-    ds_updates, ds_label = _configure_data_source(existing)
-    updates.update(ds_updates)
+    # Step 2: Usage mode
+    mode = _choose_mode()
 
-    slack_updates, slack_on = _configure_slack(existing)
-    updates.update(slack_updates)
+    # Step 3: Mode-specific config
+    if mode == MODE_ADK_LOCAL:
+        mode_updates, summary = _configure_adk_local(existing)
+    elif mode == MODE_ADK_MCP:
+        mode_updates, summary = _configure_adk_mcp(existing)
+    else:
+        mode_updates, summary = _configure_developer(existing)
 
-    sched_updates, sched_on = _configure_scheduler(existing)
-    updates.update(sched_updates)
+    updates.update(mode_updates)
 
-    adv_updates, adv_custom = _configure_advanced(existing)
-    updates.update(adv_updates)
+    # Backfill summary with LLM info
+    summary.llm_provider_label = provider_label
+    summary.llm_model = model
+    summary.env_path = env_path
 
     merge_env_file(env_path, updates)
-
-    summary = WizardSummary(
-        llm_provider_label=provider_label,
-        llm_model=model,
-        data_source_label=ds_label,
-        slack_enabled=slack_on,
-        scheduler_enabled=sched_on,
-        advanced_customized=adv_custom,
-        env_path=env_path,
-    )
     _print_confirmation(summary, {k: v for k, v in updates.items() if v is not None})
     return 0
 

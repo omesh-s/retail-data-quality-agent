@@ -1,10 +1,52 @@
-# ADK root agent: Gemini + tool that runs the live retail detection pipeline.
+# ADK root agent: Gemini + retail pipeline tool + optional external MCP toolset.
+#
+# ADK discovery
+# -------------
+# ``adk web .`` scans for a Python package exporting ``root_agent``.
+# ``myagent/__init__.py`` re-exports it from this module.
+# The ADK UI shows an app named **myagent** with the agent
+# **retail_data_quality_agent**.
+#
+# Tools registered
+# ----------------
+# 1. FunctionTool(run_retail_data_quality_analysis) — always present.
+#    Runs the local anomaly pipeline (local CSV or configured data source).
+#
+# 2. McpToolset (external DQ MCP server) — present only when
+#    ``WFM_DQ_MCP_SERVER_PATH_FOR_ADK`` is set and the script exists.
+#    May expose tools like:
+#      - get_available_dates
+#      - run_full_dq_analysis
+#      - get_metric_info
+#      - validate_derived_metric
+#    The exact tool set depends on the external server implementation.
+#
+# Configuration
+# -------------
+# ``LLM_MODEL``                         → Gemini model for the agent
+# ``WFM_DQ_MCP_SERVER_PATH_FOR_ADK``    → path to MCP server script (optional)
+# ``WFM_DQ_MCP_PYTHON_FOR_ADK``         → Python interpreter for the MCP server
+#                                          (auto-detects venv in server dir if unset)
+# ``WFM_DQ_MCP_SERVER_TIMEOUT_FOR_ADK`` → stdio connection timeout (default 90s)
+
+from __future__ import annotations
+
+import logging
+import platform
+import sys
+from pathlib import Path
 
 from google.adk.agents import Agent
 from google.adk.tools.function_tool import FunctionTool
 
 from config.settings import get_settings
 from myagent.retail_tool import run_retail_data_quality_analysis
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Model
+# ---------------------------------------------------------------------------
 
 
 def _default_adk_model() -> str:
@@ -14,52 +56,257 @@ def _default_adk_model() -> str:
         return "gemini-2.5-flash"
 
 
-# Default agent used by ``adk web`` (Google ADK / Gemini path).
+# ---------------------------------------------------------------------------
+# MCP server Python resolver
+# ---------------------------------------------------------------------------
+
+_VENV_CANDIDATES = (
+    # Windows
+    (".venv", "Scripts", "python.exe"),
+    ("venv", "Scripts", "python.exe"),
+    # Unix / macOS
+    (".venv", "bin", "python"),
+    ("venv", "bin", "python"),
+)
+
+
+def _resolve_mcp_python(server_dir: Path, explicit: str | None) -> str:
+    """Determine the Python interpreter to use for the MCP server.
+
+    Priority:
+      1. ``WFM_DQ_MCP_PYTHON_FOR_ADK`` (explicit override)
+      2. A venv found in the server directory
+      3. ``sys.executable`` (current interpreter — may lack server deps)
+    """
+    if explicit:
+        p = Path(explicit)
+        if p.is_file():
+            logger.info("MCP Python (explicit): %s", p)
+            return str(p)
+        logger.warning(
+            "WFM_DQ_MCP_PYTHON_FOR_ADK=%s not found; trying venv auto-detect",
+            explicit,
+        )
+
+    for parts in _VENV_CANDIDATES:
+        candidate = server_dir.joinpath(*parts)
+        if candidate.is_file():
+            logger.info("MCP Python (auto-detected venv): %s", candidate)
+            return str(candidate)
+
+    logger.warning(
+        "No venv found in %s — falling back to sys.executable (%s). "
+        "If the MCP server has its own dependencies (e.g. databricks-sql-connector), "
+        "set WFM_DQ_MCP_PYTHON_FOR_ADK to a Python that has them installed.",
+        server_dir,
+        sys.executable,
+    )
+    return sys.executable
+
+
+# ---------------------------------------------------------------------------
+# Tools
+# ---------------------------------------------------------------------------
+
+
+def _build_mcp_toolset():
+    """Create an McpToolset for the WFM DQ MCP server, or None if not configured."""
+    try:
+        settings = get_settings()
+        mcp_path = settings.wfm_dq_mcp_server_path_for_adk
+        if not mcp_path:
+            logger.debug("WFM_DQ_MCP_SERVER_PATH_FOR_ADK not set; MCP toolset disabled")
+            return None
+
+        script = Path(mcp_path).resolve()
+        if not script.is_file():
+            logger.warning(
+                "WFM_DQ_MCP_SERVER_PATH_FOR_ADK=%s does not exist; "
+                "ADK will run without MCP tools.",
+                mcp_path,
+            )
+            return None
+
+        python_cmd = _resolve_mcp_python(
+            script.parent, settings.wfm_dq_mcp_python_for_adk
+        )
+        timeout = settings.wfm_dq_mcp_server_timeout_for_adk
+
+        from google.adk.tools.mcp_tool.mcp_toolset import (
+            McpToolset,
+            StdioConnectionParams,
+            StdioServerParameters,
+        )
+
+        toolset = McpToolset(
+            connection_params=StdioConnectionParams(
+                server_params=StdioServerParameters(
+                    command=python_cmd,
+                    args=[str(script)],
+                    cwd=str(script.parent),
+                ),
+                timeout=timeout,
+            ),
+        )
+        logger.info(
+            "ADK MCP toolset created: script=%s python=%s timeout=%ss",
+            script,
+            python_cmd,
+            timeout,
+        )
+        return toolset
+
+    except Exception as exc:
+        logger.warning(
+            "Failed to configure MCP toolset for ADK (%s: %s); "
+            "running with pipeline tool only.",
+            type(exc).__name__,
+            exc,
+            exc_info=True,
+        )
+        return None
+
+
+def _build_tools() -> list:
+    """Assemble the agent's tool list: pipeline FunctionTool + optional MCP toolset."""
+    tools: list = [FunctionTool(run_retail_data_quality_analysis)]
+    mcp = _build_mcp_toolset()
+    if mcp is not None:
+        tools.append(mcp)
+
+    logger.info(
+        "ADK tools registered: %s",
+        [type(t).__name__ for t in tools],
+    )
+    return tools
+
+
+# ---------------------------------------------------------------------------
+# Instructions
+# ---------------------------------------------------------------------------
+
+_BASE_INSTRUCTION = """\
+You are a Retail Data Quality Analyst agent. Your job is to orchestrate MCP \
+tools and deliver concise, business-relevant summaries.
+
+## Core rules
+- ALWAYS call a tool before answering any data-quality question.
+- Tool output is the sole source of truth. Never invent anomalies, \
+severity levels, or data not present in tool results.
+- Do not explain detection algorithms or repeat raw field names verbatim.
+
+## Tool selection
+- ``run_retail_data_quality_analysis``: MCP-backed adapter for broad and \
+targeted analysis. Pass ``user_message`` and optional ``as_of_date``.
+- Prefer targeted tools for targeted questions:
+  - continuity/missing data -> continuity findings from MCP output
+  - negative outliers -> negative findings from MCP output
+  - derived validation -> use MCP validate tool when available
+
+## How to interpret tool output
+
+### Continuity gaps / missing data
+- A metric missing 7+ consecutive days at ONE store is a localized issue.
+- The SAME metric missing across MULTIPLE stores in the same date window \
+is a systemic or upstream feed failure — flag it as higher concern.
+- If tool output contains ``continuity_scope``, use it directly \
+(isolated / multi_store / systemic).
+- If tool output contains ``affected_store_count``, cite the blast radius.
+- If these fields are absent, infer scope from repeated patterns if clear; \
+otherwise report each gap individually without over-claiming.
+
+### Negative values
+- Small negatives (e.g. -5, -10) CAN be legitimate operational reversals \
+in retail (bulk order cancellations, correction flows).
+- Large negatives (e.g. -1000) are genuine data quality concerns.
+- Do NOT overstate every negative as "data corruption."
+- If ``negative_magnitude``, ``historical_ratio``, or ``severity_reason`` \
+are present, use them to calibrate your language.
+- Separate likely operational reversals from suspicious large outliers.
+
+### Derived metric mismatches
+- These are HIGHEST PRIORITY when flagged. A derived total not matching \
+its component sum indicates a calculation or ETL defect.
+- If ``csv_value``, ``expected_value``, ``error_pct``, and \
+``component_metric_codes`` are present, cite them with exact numbers.
+- If a ``validate_derived_metric`` tool is available and the user asks \
+about a specific formula, prefer that targeted tool over broad analysis.
+
+### Priority and severity
+- If ``priority`` is present, use it for ordering (lower = more important).
+- ``severity`` (High/Medium/Low) is the main business label.
+- ``severity_reason`` explains why in one phrase — use it if present.
+- If ``scope_summary`` is present, mention the aggregate breakdown briefly.
+
+## Response format
+
+**For broad daily analysis:**
+One-sentence health assessment, then 3-5 bullets max:
+- Lead with highest priority / severity finding
+- Each bullet: severity, issue type, metric, store(s), one key fact
+- Group related findings (e.g. "3 stores affected" not 3 separate bullets)
+- Mention blast radius for multi-store/systemic issues
+- Omit Low-severity unless nothing else exists
+
+**For specific questions** (continuity, negatives, derived checks):
+Answer the question directly and concisely. Include only findings \
+relevant to what was asked. Do not pad with unrelated issue types.
+
+**For derived metric validation:**
+Show a compact result: metric formula, mismatched stores, csv vs expected \
+values, error percentage. Skip stores that match.
+
+Stay concise. No filler. No generic phrases like "overall there are some \
+anomalies." Lead with what matters most.
+"""
+
+_MCP_INSTRUCTION_ADDENDUM = """
+## MCP tools (external DQ server)
+When an external MCP server is connected, additional tools may be available:
+- ``get_available_dates`` — date range in the source table.
+- ``run_full_dq_analysis(check_date, lookback_days, dept_desc)`` — full \
+DQ rule execution on production data. Returns richer fields including \
+``priority``, ``continuity_scope``, ``scope_summary``, and \
+``severity_reason``.
+- ``get_metric_info(metric_cd)`` — metric metadata and derived formulas.
+- ``validate_derived_metric(metric_cd, check_date, dept_desc, store_id)`` \
+— targeted derived formula check. Prefer this for specific formula \
+validation questions.
+
+**Routing guidance:**
+- Use MCP tools for production / Databricks data questions.
+- Do NOT invent local detector logic; MCP output is source of truth.
+- For "validate this derived metric" questions, use \
+``validate_derived_metric`` if available. If unavailable, fall back to \
+``run_full_dq_analysis`` and filter for derived mismatch findings.
+- For "is this 7-day drop isolated or systemic" questions, use \
+``run_full_dq_analysis`` and focus on continuity findings.
+- For "show negative outliers" questions, use ``run_full_dq_analysis`` \
+and focus on negative outlier findings.
+"""
+
+
+def _build_instruction() -> str:
+    """Build agent instruction, appending MCP guidance if MCP tools are configured."""
+    try:
+        settings = get_settings()
+        if settings.wfm_dq_mcp_server_path_for_adk:
+            script = Path(settings.wfm_dq_mcp_server_path_for_adk)
+            if script.exists():
+                return _BASE_INSTRUCTION + _MCP_INSTRUCTION_ADDENDUM
+    except Exception:
+        pass
+    return _BASE_INSTRUCTION
+
+
+# ---------------------------------------------------------------------------
+# Agent
+# ---------------------------------------------------------------------------
+
 root_agent = Agent(
     name="retail_data_quality_agent",
     model=_default_adk_model(),
     description="Analyzes retail metric anomalies and summarizes data quality issues.",
-    tools=[FunctionTool(run_retail_data_quality_analysis)],
-    instruction="""
-You are an Expert Data Quality Analyst Agent specializing in Retail Operations for H-E-B-style retail data workflows.
-
-**Tool use (required)**
-
-- For **every** user question about retail data quality, anomalies, or a specific day’s metrics, you **must** call ``run_retail_data_quality_analysis`` **first** before answering.
-- Pass ``user_message`` with the user’s latest message (verbatim is fine).
-- Pass ``as_of_date`` as ``YYYY-MM-DD`` when the user states a clear calendar day; otherwise omit it so the tool infers the date from the message or uses the **latest** date in the CSV.
-- Your answer must be based **only** on the tool’s return value for anomaly facts. **Never** invent rows, severities, or issue types.
-
-You receive **pre-detected** anomalies from the tool. Each record already includes:
-- ``severity`` (High / Medium / Low) and ``impact_score`` (0–1) from deterministic scoring.
-- ``issue_type`` (e.g. Continuity Gap, Inconsistent Grain, Positive Spike, Negative Outlier).
-- Business hints: ``estimated_revenue_at_risk``, ``customer_impact``, ``operational_risk``.
-
-**Rules you must follow**
-
-1. Use the ``severity`` and ``issue_type`` values exactly as provided. Do **not** invent new severity levels or issue categories.
-2. When many anomalies share the same store and department, **summarize them together** (one narrative per store/dept cluster) instead of repeating the same context line-by-line.
-3. Prioritize **High**, then **Medium**, issues in the Summary and in “Anomalies Found”. Group **Low** issues into a short tail (counts + one sentence) or omit them if there are too many to stay readable.
-4. Use ``estimated_revenue_at_risk`` and ``operational_risk`` to decide **which anomalies to highlight first** in the executive summary (e.g. High operational risk or high revenue-at-risk before minor grain noise).
-5. Do **not** contradict the machine-readable facts (dates, metrics, severities). You may explain and contextualize; you may not fabricate new anomalies or change severity.
-
-**Context on detection (for your language only)**
-
-- Continuity: SYSTEM_ON/SYSTEM_OFF missing for multi-day streaks.
-- Grain: expected store/dept/metric combos missing on the as-of day vs. recent pattern.
-- Spikes / negative outliers: statistical or sign violations on volume/revenue/customer metrics.
-
-Respond in this format:
-
-Summary:
-- Overall Health Score (aligned with the mix of High/Medium/Low you were given)
-- Short Assessment (lead with highest business impact)
-
-Anomalies Found:
-- Group by Storeid and Deptname where possible
-- For each group: severity mix, issue types, and concise explanations using the provided fields
-- Low-severity tail: brief if present
-
-Be precise, concise, and professional. Do not make up missing facts.
-""",
+    tools=_build_tools(),
+    instruction=_build_instruction(),
 )
